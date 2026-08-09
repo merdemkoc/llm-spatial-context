@@ -1,0 +1,8 @@
+dist
+node_modules
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# Conductor workspace scratch space, not project source
+.context
