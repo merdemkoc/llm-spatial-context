@@ -40,7 +40,46 @@ Canonical Node  ──▶  Tldraw Adapter  ──▶  Tldraw Shape
       └──────────  user interaction  ◀─────────┘
 ```
 
-tldraw's store is the single runtime store; the canonical Canvas is a derived view over it (`getCanvasDocument`). There is no second store to fall out of step, so undo/redo, IndexedDB persistence and cross-tab sync all keep working untouched. The state tldraw can't express — `createdAt`, `updatedAt`, `createdBy` — lives in `shape.meta`, which tldraw persists and syncs but never reads.
+tldraw's store is the single runtime store; the canonical Canvas is a derived view over it (`getCanvasDocument`). There is no second store to fall out of step, so undo/redo, IndexedDB persistence and cross-tab sync all keep working untouched. The state tldraw can't express — `createdAt`, `updatedAt`, `createdBy`, `contextualField` — lives in `shape.meta`, which tldraw persists and syncs but never reads. A shape prop would need a schema migration and a `persistenceKey` bump; meta needs neither.
+
+### Contextual field
+
+A Node may declare a `contextualField.radius` in world coordinates. From that, `spatialInfluence.ts` derives how much one Node influences another: linear falloff over centre-to-centre distance, `1` when the centres coincide and `0` at or beyond the radius.
+
+Influence is **derived, never stored**. It is a function of two Nodes' geometry plus the source's radius, so moving a Node changes its context with no state to invalidate — nothing writes an `influence` field into a Node. It is also directional: two Nodes with different radii influence each other by different amounts, without any semantic relation being involved.
+
+Two details worth knowing:
+
+- The radius is optional and **never defaulted**. A Node with no field exerts no influence, which is a different claim from a Node with a small one.
+- The centre is rotation-aware. `SpatialProperties.rotation` is applied about the top-left corner, so `x + width / 2` is only the centre of an unrotated box.
+
+### Three layers of context
+
+A `CanvasDocument` deliberately separates what it knows about a canvas into three kinds of claim, so a reader — a person or a model — can tell them apart instead of receiving them pre-mixed:
+
+| Layer                       | Where                                        | Answers                                                        |
+| --------------------------- | -------------------------------------------- | -------------------------------------------------------------- |
+| Node spatial state          | `nodes[].spatial`, `nodes[].contextualField` | Where is it, how big, how far does it reach?                   |
+| Spatially derived context   | `spatialContext.influences`                  | How far apart are they, how strongly does one reach the other? |
+| Explicit semantic relations | `relations`                                  | What did the user actually connect, and call it?               |
+
+```json
+{
+	"nodes": {
+		"node-a": { "spatial": { "x": 300, "y": 200, "…": "…" }, "contextualField": { "radius": 500 } }
+	},
+	"relations": { "relation-1": { "from": "node-a", "to": "node-b", "type": "causes" } },
+	"spatialContext": {
+		"influences": [{ "source": "node-a", "target": "node-b", "distance": 326, "influence": 0.349 }]
+	}
+}
+```
+
+**Proximity never becomes a relation.** Nothing infers `related_to`, or any other type, from two Nodes being close. `relations` is what the user said; `spatialContext` is what the layout implies and nobody named.
+
+`spatialContext` is assembled in `getCanvasDocument`, the one place a document is built, which is why it needs no invalidation logic and no manual trigger — a move, a resize, a radius change, an addition or a deletion all produce a fresh document. It is **output, not input**: importing a document ignores whatever `spatialContext` it carried and derives a new one from the Nodes.
+
+Every directed pair is emitted, including out-of-range ones at `influence: 0`, so "these are too far apart" stays distinguishable from "this pair wasn't considered". That is `N² − N` entries. Distance is rounded to whole units and influence to three decimals in the document; `calculateSpatialInfluences` stays exact for anything doing further arithmetic.
 
 ## Layout
 
@@ -51,7 +90,8 @@ src/
   index.css                    Global styles + tldraw.css import
   domain/                      The canonical model — no tldraw imports, ever
     node.ts                    CanvasNode, spatial/visual/metadata, createPostItNode
-    canvas.ts                  CanvasDocument, Relation placeholder
+    canvas.ts                  CanvasDocument — nodes, relations, spatialContext
+    spatialInfluence.ts        Node centre, distance, influence, buildSpatialContext
   canvas/
     Canvas.tsx                 The <Tldraw /> wrapper — persistence, onMount hook
     config.tsx                 Module-scope shape utils, tools, UI overrides and toolbar
@@ -61,14 +101,16 @@ src/
       richText.ts              plain text ⇄ rich text, kept pure
       canvasView.ts            getCanvasDocument(editor), useCanvasDocument()
       metadata.ts              createdAt / updatedAt side effects
+      contextualField.ts       setContextualFieldRadius(editor, ids, radius)
     shapes/                    The tldraw projection of a post_it
       postItShape.ts           Shape type + guard (type-only tldraw imports)
       postItStyles.ts          Raw-hex StyleProps for fill / stroke / text
       PostItShapeUtil.tsx      Rendering, geometry, resize, text editing
       PostItTool.ts            Creates the Node first, then projects it
     ui/
-      InspectorPanel.tsx       Live canonical JSON, with export and import
-      PostItStylePanel.tsx     Colour controls
+      InspectorPanel.tsx       Live canonical JSON + derived influence table
+      PostItStylePanel.tsx     Colour controls, and hosts the field control
+      ContextualFieldControl.tsx  Radius input for the selection
 ```
 
 Imports resolve `@/` to `src/`, e.g. `import { Canvas } from '@/canvas/Canvas'`.
@@ -86,11 +128,22 @@ Imports resolve `@/` to `src/`, e.g. `import { Canvas } from '@/canvas/Canvas'`.
 
 - **Formatting is lost when a canvas is rebuilt from canonical JSON.** `NodeContent.text` is a plain string, so bold and lists don't survive a JSON → shape rebuild. Text itself round-trips exactly. Pinned by a test.
 - **One Canvas is one tldraw page.** The page menu is hidden to keep that true.
-- **`shape.meta` is unvalidated.** Meta validators need `createTLSchema`, which needs the `store` prop, which is mutually exclusive with `persistenceKey`. The adapter reads meta defensively instead.
+- **`shape.meta` has no _schema_, but its values are still validated.** Custom meta validators need `createTLSchema`, which needs the `store` prop, which is mutually exclusive with `persistenceKey` — so nothing checks that `contextualField` looks the way we expect, and the adapter reads meta defensively instead. What _is_ enforced is `T.jsonValue`: the record validator walks meta and rejects the whole write with `Expected json serializable value` if it finds an `undefined` anywhere. Use `null` to mean "absent" in a meta patch, never `undefined`.
+- **Meta patches are shallow-merged, key by key.** `editor.updateShapes` merges `meta` onto the existing meta (`applyPartialToRecordWithProps`), so omitting a key keeps its old value rather than removing it. Clearing a field has to be written explicitly — see `contextualFieldPatch`.
 
 ## Testing
 
-`npm test` runs the round-trip invariant over the adapter as pure functions — no DOM, no editor. That works because `src/domain`, `src/canvas/adapter` and `postItShape.ts` import tldraw for _types only_; adding a runtime tldraw import to any of them will break it.
+`npm test` runs three layers, because the first one alone turned out not to be enough — two bugs shipped that were invisible to pure tests (a meta write the record validator rejected, and a control whose commit was destroyed by the selection change that triggered it).
+
+| Layer              | Files                                         | Environment                |
+| ------------------ | --------------------------------------------- | -------------------------- |
+| Pure               | `domain/*.test.ts`, `adapter/adapter.test.ts` | `node` — no DOM, no editor |
+| Real editor        | `adapter/editor.test.ts`                      | `jsdom`                    |
+| Rendered component | `ui/*.test.tsx`                               | `jsdom`                    |
+
+The default environment is `node`; the two DOM suites opt in with a `@vitest-environment jsdom` docblock. That keeps the pure layer honest: `src/domain`, `src/canvas/adapter` and `postItShape.ts` import tldraw for _types only_, and adding a runtime tldraw import to any of them will break it.
+
+The editor layer constructs a real `Editor` over a `createTLStore` with no React at all, which is what makes "does this actually reach the canonical Canvas" testable. Anything that writes through the editor belongs in `adapter/` rather than in a component, so it can be tested there — `contextualField.ts` exists for exactly that reason.
 
 ## Persistence
 

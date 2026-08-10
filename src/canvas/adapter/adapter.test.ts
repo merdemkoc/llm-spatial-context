@@ -9,7 +9,13 @@
  */
 import { describe, expect, it } from 'vitest'
 import { createPostItNode, type PostItNode } from '@/domain'
-import { nodeToShape, readNodeMeta, shapeToNode } from '@/canvas/adapter/adapter'
+import {
+	contextualFieldPatch,
+	nodeToShape,
+	readNodeContextualField,
+	readNodeMeta,
+	shapeToNode,
+} from '@/canvas/adapter/adapter'
 import { nodeIdToShapeId, shapeIdToNodeId } from '@/canvas/adapter/ids'
 import { plainTextToRichText, richTextToPlainText } from '@/canvas/adapter/richText'
 import { POST_IT_SHAPE_TYPE, type PostItShape } from '@/canvas/shapes/postItShape'
@@ -95,6 +101,20 @@ describe('node ↔ shape round trip', () => {
 			updatedAt: NOW,
 			createdBy: 'agent',
 		})
+	})
+
+	it('preserves the contextual field', () => {
+		// The radius can't be derived back out of a tldraw shape the way geometry
+		// can, so if the adapter didn't carry it in meta it would vanish on
+		// reload and be dropped by every import.
+		expect(roundTrip(sampleNode({ radius: 500 })).contextualField).toEqual({ radius: 500 })
+		expect(roundTrip(sampleNode({ radius: 0 })).contextualField).toEqual({ radius: 0 })
+	})
+
+	it('leaves a node without a field without the key', () => {
+		// toStrictEqual, so `contextualField: undefined` would fail here.
+		expect(roundTrip(sampleNode())).toStrictEqual(sampleNode())
+		expect(JSON.stringify(roundTrip(sampleNode()))).not.toContain('contextualField')
 	})
 
 	it('reads a shape whose world position differs from its local position', () => {
@@ -222,5 +242,101 @@ describe('metadata reads', () => {
 			updatedAt: NOW,
 			createdBy: 'system',
 		})
+	})
+})
+
+describe('contextual field reads', () => {
+	it('returns undefined for anything that is not a field', () => {
+		for (const meta of [
+			undefined,
+			{},
+			{ contextualField: null },
+			{ contextualField: 500 },
+			{ contextualField: [500] },
+			{ contextualField: {} },
+			{ contextualField: { radius: '500' } },
+			{ contextualField: { radius: Number.POSITIVE_INFINITY } },
+		]) {
+			expect(readNodeContextualField(meta)).toBeUndefined()
+		}
+	})
+
+	it('keeps a non-positive radius rather than scrubbing it', () => {
+		// "No reach" is a legitimate state that the influence calculation already
+		// understands; discarding it here would turn it back into "no field".
+		expect(readNodeContextualField({ contextualField: { radius: 0 } })).toEqual({ radius: 0 })
+		expect(readNodeContextualField({ contextualField: { radius: -10 } })).toEqual({ radius: -10 })
+	})
+
+	it('ignores extra keys inside the field', () => {
+		expect(readNodeContextualField({ contextualField: { radius: 250, strength: 0.5 } })).toEqual({
+			radius: 250,
+		})
+	})
+})
+
+/**
+ * `shape.meta` is validated as JSON: `T.jsonValue` walks it and throws
+ * "Expected json serializable value" on any `undefined` it finds. That is not
+ * something the record shrugs off — it rejects the whole write, so an
+ * `undefined` anywhere in meta makes creating a post-it fail outright.
+ *
+ * Mirrors that check by asserting the value survives a JSON round trip
+ * unchanged. `toStrictEqual` is required: `toEqual` treats `{ a: undefined }`
+ * and `{}` as equal, which is exactly the difference being tested.
+ */
+function expectJsonSerializable(value: object) {
+	expect(JSON.parse(JSON.stringify(value))).toStrictEqual(value)
+}
+
+describe('contextual field writes', () => {
+	it('writes meta that passes JSON validation, with and without a field', () => {
+		expectJsonSerializable(nodeToShape(sampleNode()).meta!)
+		expectJsonSerializable(nodeToShape(sampleNode({ radius: 500 })).meta!)
+	})
+
+	it('names no contextualField key on a node without a field', () => {
+		expect(nodeToShape(sampleNode()).meta).not.toHaveProperty('contextualField')
+	})
+
+	const existing = {
+		createdAt: NOW,
+		updatedAt: NOW,
+		createdBy: 'user',
+		contextualField: { radius: 500 },
+	}
+
+	/** What tldraw's `applyPartialToRecordWithProps` does to a meta patch. */
+	function applyPatch(patch: object) {
+		return { ...existing, ...patch }
+	}
+
+	it('sets a radius through a patch, leaving the timestamps alone', () => {
+		const merged = applyPatch(contextualFieldPatch({ radius: 120 }))
+
+		expect(readNodeContextualField(merged)).toEqual({ radius: 120 })
+		expect(readNodeMeta(merged).createdAt).toBe(NOW)
+	})
+
+	it('clears the field through a patch, using null rather than undefined', () => {
+		// The two constraints that pin this down: tldraw merges meta patches key by
+		// key, so an omitted key would leave the old radius in place and "Clear"
+		// would silently do nothing — and `undefined` would fail JSON validation.
+		const patch = contextualFieldPatch(undefined)
+		expect(patch).toEqual({ contextualField: null })
+		expectJsonSerializable(patch)
+
+		const merged = applyPatch(patch)
+		expect(readNodeContextualField(merged)).toBeUndefined()
+		expect(readNodeMeta(merged).createdBy).toBe('user')
+	})
+
+	it('keeps a cleared field out of the canonical node entirely', () => {
+		// The null is an artefact of the projection, not part of the model.
+		const shape = { ...toShape(sampleNode()), meta: applyPatch(contextualFieldPatch(undefined)) }
+		const node = shapeToNode(shape)
+
+		expect(node).not.toHaveProperty('contextualField')
+		expect(JSON.stringify(node)).not.toContain('contextualField')
 	})
 })

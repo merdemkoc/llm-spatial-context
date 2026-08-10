@@ -12,12 +12,14 @@
  *   visual.fill/stroke/textColor → props
  *   content.text                → derived from props.richText
  *   metadata.*                  → shape.meta
+ *   contextualField             → shape.meta — tldraw has no concept of it, and
+ *                                 unlike geometry it can't be derived back out
  *
  * Everything here is pure and free of tldraw runtime imports, so the round-trip
  * invariant can be tested without an editor.
  */
 import type { IndexKey, JsonObject, TLShapePartial } from 'tldraw'
-import type { CanvasNode, NodeMetadata, PostItNode } from '@/domain'
+import type { CanvasNode, ContextualField, NodeMetadata, PostItNode } from '@/domain'
 import { DEFAULT_ORDER } from '@/domain'
 import { POST_IT_SHAPE_TYPE, type PostItShape } from '@/canvas/shapes/postItShape'
 import { nodeIdToShapeId, shapeIdToNodeId } from '@/canvas/adapter/ids'
@@ -73,7 +75,54 @@ export function writeNodeMeta(metadata: NodeMetadata): JsonObject {
 	}
 }
 
+/**
+ * The contextual field shares `shape.meta` with the timestamps, for the same
+ * reason: it's canonical state tldraw itself has no representation for. A shape
+ * prop would need a schema migration and a `persistenceKey` bump; meta needs
+ * neither, at the cost of being unvalidated — hence the same defensive reads.
+ *
+ * A radius of `0` or less is kept rather than scrubbed. It's a legitimate state
+ * meaning "no reach", and the influence calculation already treats it as such;
+ * discarding it here would silently turn it back into "no field at all".
+ */
+export function readNodeContextualField(meta: JsonObject | undefined): ContextualField | undefined {
+	const field = meta?.contextualField
+	if (typeof field !== 'object' || field === null || Array.isArray(field)) return undefined
+
+	const radius = (field as JsonObject).radius
+	if (typeof radius !== 'number' || !Number.isFinite(radius)) return undefined
+
+	return { radius }
+}
+
+/**
+ * Spreadable meta for a *new* shape: no key at all when there is no field.
+ *
+ * `undefined` is not an option here. `shape.meta` is validated as JSON —
+ * `T.jsonValue` walks it and rejects any `undefined` it finds — so writing
+ * `contextualField: undefined` fails the record validator outright rather than
+ * being quietly dropped.
+ */
+export function writeNodeContextualField(field: ContextualField | undefined): JsonObject {
+	return field ? { contextualField: { radius: field.radius } } : {}
+}
+
+/**
+ * A meta *patch* for a shape that already exists, where clearing has to be
+ * expressed rather than implied.
+ *
+ * Clearing writes `null`, which is the one value that satisfies both
+ * constraints: tldraw shallow-merges meta patches key by key, so an omitted key
+ * would leave the previous radius in place, and `undefined` would fail JSON
+ * validation. `readNodeContextualField` reads `null` back as "no field".
+ */
+export function contextualFieldPatch(field: ContextualField | undefined): JsonObject {
+	return { contextualField: field ? { radius: field.radius } : null }
+}
+
 export function shapeToNode(shape: PostItShape, pageTransform?: PageTransform): PostItNode {
+	const contextualField = readNodeContextualField(shape.meta)
+
 	return {
 		id: shapeIdToNodeId(shape.id),
 		type: 'post_it',
@@ -88,6 +137,8 @@ export function shapeToNode(shape: PostItShape, pageTransform?: PageTransform): 
 			rotation: pageTransform?.rotation ?? shape.rotation,
 			order: shape.index ?? DEFAULT_ORDER,
 		},
+		// Spread, so a node without a field has no key rather than `undefined`.
+		...(contextualField ? { contextualField } : {}),
 		visual: {
 			fill: shape.props.fill,
 			stroke: shape.props.stroke,
@@ -120,6 +171,9 @@ export function nodeToShape(node: CanvasNode): TLShapePartial<PostItShape> {
 			stroke: node.visual.stroke,
 			textColor: node.visual.textColor,
 		},
-		meta: writeNodeMeta(node.metadata),
+		meta: {
+			...writeNodeMeta(node.metadata),
+			...writeNodeContextualField(node.contextualField),
+		},
 	}
 }

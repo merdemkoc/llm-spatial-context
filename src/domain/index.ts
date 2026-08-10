@@ -8,6 +8,7 @@ export type {
 
 export type {
 	CanvasNode,
+	ContextualField,
 	CreatePostItNodeOptions,
 	NodeContent,
 	NodeId,
@@ -25,3 +26,13 @@ export {
 	POST_IT_DEFAULT_VISUAL,
 	POST_IT_DEFAULT_WIDTH,
 } from '@/domain/node'
+
+export type { Point, SpatialContext, SpatialInfluence } from '@/domain/spatialInfluence'
+
+export {
+	buildSpatialContext,
+	calculateSpatialInfluence,
+	calculateSpatialInfluences,
+	distanceBetweenNodes,
+	nodeCenter,
+} from '@/domain/spatialInfluence'
