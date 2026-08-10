@@ -1,5 +1,5 @@
 /**
- * Colour controls for post-its.
+ * Colour and contextual-field controls for post-its.
  *
  * These exist so that "a visual interaction updates `Node.visual`" is something
  * the app can actually do, not just something the model supports. tldraw's own
@@ -25,6 +25,7 @@ import {
 	PostItStrokeStyle,
 	PostItTextColorStyle,
 } from '@/canvas/shapes/postItStyles'
+import { ContextualFieldControl } from '@/canvas/ui/ContextualFieldControl'
 
 interface SwatchRowProps {
 	label: string
@@ -98,6 +99,7 @@ function PostItColorSection() {
 export function PostItStylePanel(props: TLUiStylePanelProps) {
 	return (
 		<DefaultStylePanel {...props}>
+			<ContextualFieldControl />
 			<PostItColorSection />
 			<DefaultStylePanelContent />
 		</DefaultStylePanel>

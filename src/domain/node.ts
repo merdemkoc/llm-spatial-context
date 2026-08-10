@@ -89,6 +89,23 @@ export interface NodeMetadata {
 	createdBy: 'user' | 'agent' | 'system'
 }
 
+/**
+ * How far this node's context reaches, in world coordinates — the same units as
+ * `SpatialProperties`, so the field scales with the canvas rather than the zoom
+ * level.
+ *
+ * Optional and never defaulted. A node without a field exerts no influence at
+ * all, which is a different statement from a node with a small one, and the
+ * model shouldn't quietly turn the first into the second.
+ *
+ * Only `radius`. Strength, weight, confidence, falloff shape and semantic role
+ * are all deliberately absent until proximity alone has been shown to be a
+ * useful signal.
+ */
+export interface ContextualField {
+	radius: number
+}
+
 export interface CanvasNode {
 	id: NodeId
 	type: NodeType
@@ -96,6 +113,14 @@ export interface CanvasNode {
 	content: NodeContent
 
 	spatial: SpatialProperties
+
+	/**
+	 * Configuration rather than geometry, so it sits beside `spatial` instead of
+	 * inside it. The influence this field produces is never stored here — it is
+	 * derived on demand from geometry, so moving a node changes its context for
+	 * free. See `spatialInfluence.ts`.
+	 */
+	contextualField?: ContextualField
 
 	visual: VisualProperties
 
@@ -133,6 +158,8 @@ export interface CreatePostItNodeOptions {
 	rotation?: number
 	order?: string
 	text?: string
+	/** Contextual-field radius. Omitted means no field, not a default one. */
+	radius?: number
 	visual?: Partial<VisualProperties>
 	createdBy?: NodeMetadata['createdBy']
 	/** Injectable for deterministic tests. */
@@ -160,6 +187,9 @@ export function createPostItNode(options: CreatePostItNodeOptions): PostItNode {
 			rotation: options.rotation ?? 0,
 			order: options.order ?? DEFAULT_ORDER,
 		},
+		// Spread rather than assigned, so a node without a radius has no
+		// `contextualField` key at all instead of one set to undefined.
+		...(options.radius === undefined ? {} : { contextualField: { radius: options.radius } }),
 		visual: {
 			...POST_IT_DEFAULT_VISUAL,
 			...options.visual,

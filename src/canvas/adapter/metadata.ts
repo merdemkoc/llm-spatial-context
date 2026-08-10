@@ -7,7 +7,7 @@
  */
 import type { Editor, TLShape } from 'tldraw'
 import { POST_IT_SHAPE_TYPE } from '@/canvas/shapes/postItShape'
-import { writeNodeMeta } from '@/canvas/adapter/adapter'
+import { readNodeContextualField, writeNodeMeta } from '@/canvas/adapter/adapter'
 
 /**
  * Creation normally means "this node came into existence now", which is also
@@ -78,6 +78,14 @@ function hasCanonicalChange(prev: TLShape, next: TLShape): boolean {
 		prev.opacity !== next.opacity ||
 		prev.index !== next.index
 	) {
+		return true
+	}
+
+	// The contextual field lives in meta, so editing a radius is a canonical
+	// change that isn't visible in the record or the props. Compared field by
+	// field rather than as whole meta objects: meta also holds `updatedAt`, and
+	// comparing that against itself would make this handler restamp forever.
+	if (readNodeContextualField(prev.meta)?.radius !== readNodeContextualField(next.meta)?.radius) {
 		return true
 	}
 
