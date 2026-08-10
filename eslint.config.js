@@ -18,6 +18,25 @@ export default tseslint.config(
 			globals: globals.browser,
 		},
 	},
+	// The canonical model must stay independent of tldraw. That boundary is the
+	// whole point of the architecture, so it's enforced rather than agreed.
+	{
+		files: ['src/domain/**/*.{ts,tsx}'],
+		rules: {
+			'no-restricted-imports': [
+				'error',
+				{
+					patterns: [
+						{
+							group: ['tldraw', '@tldraw/*'],
+							message:
+								'The canonical model must not depend on tldraw. Put the tldraw-facing code in src/canvas/adapter instead.',
+						},
+					],
+				},
+			],
+		},
+	},
 	// Must stay last: turns off rules that would fight Prettier.
 	prettier
 )
