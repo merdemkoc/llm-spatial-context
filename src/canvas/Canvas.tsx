@@ -1,17 +1,19 @@
 import { Tldraw, type Editor } from 'tldraw'
 import { components, customShapeUtils, customTools, uiOverrides } from '@/canvas/config'
+import { registerNodeMetadata } from '@/canvas/adapter/metadata'
 
 /**
  * Documents are stored in the browser's IndexedDB under this key, so work
  * survives a refresh and syncs between tabs on the same origin. Drop the prop
  * below to start from a blank canvas on every load.
+ *
+ * Bumped from `llm-spatial-context` when the note-card example was removed:
+ * stored records whose shape util is no longer registered fail to load.
  */
-const PERSISTENCE_KEY = 'llm-spatial-context'
+const PERSISTENCE_KEY = 'llm-spatial-context-nodes'
 
 function handleMount(editor: Editor) {
-	// Prototype logic that needs the editor goes here — this runs once the
-	// editor is ready. For example: editor.createShape(...),
-	// editor.getCurrentPageShapes(), editor.store.listen(...).
+	registerNodeMetadata(editor)
 
 	// Convenience while prototyping: reach the editor from the browser console.
 	if (import.meta.env.DEV) {
