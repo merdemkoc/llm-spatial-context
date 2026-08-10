@@ -12,6 +12,7 @@
  */
 import { useEditor, useValue, type Editor } from 'tldraw'
 import type { CanvasDocument, CanvasNode, NodeId } from '@/domain'
+import { buildSpatialContext } from '@/domain'
 import { isPostItShape } from '@/canvas/shapes/postItShape'
 import { shapeToNode } from '@/canvas/adapter/adapter'
 
@@ -42,8 +43,15 @@ export function getCanvasDocument(editor: Editor): CanvasDocument {
 		id: pageId.startsWith(PAGE_ID_PREFIX) ? pageId.slice(PAGE_ID_PREFIX.length) : pageId,
 		nodes,
 		// Relations are graph-level entities with a place in the model and no
-		// implementation yet. Nothing populates this.
+		// implementation yet. Nothing populates this — and nothing should
+		// populate it from `spatialContext` below, which is a different kind of
+		// claim about the canvas.
 		relations: {},
+		// Derived here, at the one place the document is assembled, so "the JSON
+		// always reflects the current layout" needs no invalidation logic and no
+		// manual trigger: every move, resize, radius change, addition and
+		// deletion already produces a fresh document.
+		spatialContext: buildSpatialContext(Object.values(nodes)),
 		metadata: {
 			createdAt: min(timestamps.map((t) => t.createdAt)),
 			updatedAt: max(timestamps.map((t) => t.updatedAt)),

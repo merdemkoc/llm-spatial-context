@@ -22,7 +22,12 @@ import {
 	Editor,
 	type TLStore,
 } from 'tldraw'
-import { calculateSpatialInfluence, createPostItNode, type CanvasNode } from '@/domain'
+import {
+	calculateSpatialInfluence,
+	createPostItNode,
+	type CanvasDocument,
+	type CanvasNode,
+} from '@/domain'
 import { PostItShapeUtil } from '@/canvas/shapes/PostItShapeUtil'
 import { POST_IT_SHAPE_TYPE } from '@/canvas/shapes/postItShape'
 import { contextualFieldPatch, nodeToShape } from '@/canvas/adapter/adapter'
@@ -200,6 +205,174 @@ describe('setting a radius on the selection, the way the panel does', () => {
 
 		expect(setRadiusOnSelection(null)).toBe(1)
 		expect(readNode('a')).not.toHaveProperty('contextualField')
+	})
+})
+
+describe('spatialContext in the canonical document', () => {
+	function context() {
+		return getCanvasDocument(editor).spatialContext
+	}
+
+	function entry(source: string, target: string) {
+		const found = context().influences.find((i) => i.source === source && i.target === target)
+		expect(found, `no influence entry for ${source} → ${target}`).toBeDefined()
+
+		return found!
+	}
+
+	it('appears for a canvas of three nodes, as every directed pair', () => {
+		createPostIt('a', 0, 0, 500)
+		createPostIt('b', 400, 0, 500)
+		createPostIt('c', 800, 0)
+
+		expect(context().influences).toHaveLength(6)
+	})
+
+	it('is present and empty rather than absent on a bare canvas', () => {
+		expect(context()).toEqual({ influences: [] })
+	})
+
+	it('recalculates when a node moves — closer means more influence', () => {
+		createPostIt('a', 0, 0, 500)
+		createPostIt('b', 400, 0)
+
+		const before = entry('a', 'b')
+
+		editor.updateShapes([{ id: nodeIdToShapeId('b'), type: POST_IT_SHAPE_TYPE, x: 200 }])
+		const after = entry('a', 'b')
+
+		expect(after.distance).toBeLessThan(before.distance)
+		expect(after.influence).toBeGreaterThan(before.influence)
+	})
+
+	it('drops to zero once a node is moved out of the field', () => {
+		createPostIt('a', 0, 0, 500)
+		createPostIt('b', 200, 0)
+
+		expect(entry('a', 'b').influence).toBeGreaterThan(0)
+
+		editor.updateShapes([{ id: nodeIdToShapeId('b'), type: POST_IT_SHAPE_TYPE, x: 5000 }])
+
+		// The pair is kept rather than omitted: "out of range" and "not considered"
+		// have to stay tellable apart.
+		expect(entry('a', 'b').influence).toBe(0)
+	})
+
+	it('recalculates when a node is resized', () => {
+		// Size moves the centre, so it moves the distance too.
+		createPostIt('a', 0, 0, 500)
+		createPostIt('b', 400, 0)
+
+		const before = entry('a', 'b').distance
+
+		editor.updateShapes([{ id: nodeIdToShapeId('b'), type: POST_IT_SHAPE_TYPE, props: { w: 400 } }])
+
+		expect(entry('a', 'b').distance).not.toBe(before)
+	})
+
+	it('recalculates when a radius changes', () => {
+		createPostIt('a', 0, 0, 500)
+		createPostIt('b', 250, 0)
+
+		expect(entry('a', 'b').influence).toBeCloseTo(0.5)
+
+		setRadius('a', 1000)
+		expect(entry('a', 'b').influence).toBeCloseTo(0.75)
+
+		setRadius('a', null)
+		expect(entry('a', 'b').influence).toBe(0)
+	})
+
+	it('recalculates when a node is added or deleted', () => {
+		createPostIt('a', 0, 0, 500)
+		createPostIt('b', 400, 0, 500)
+		expect(context().influences).toHaveLength(2)
+
+		createPostIt('c', 800, 0, 500)
+		expect(context().influences).toHaveLength(6)
+
+		editor.deleteShapes([nodeIdToShapeId('c')])
+		expect(context().influences).toHaveLength(2)
+	})
+
+	it('keeps both directions when the radii differ', () => {
+		createPostIt('a', 0, 0, 500)
+		createPostIt('b', 100, 0, 200)
+
+		expect(entry('a', 'b').influence).toBeCloseTo(0.8)
+		expect(entry('b', 'a').influence).toBeCloseTo(0.5)
+	})
+
+	it('rounds for the document without touching the nodes', () => {
+		createPostIt('a', 0, 0, 700)
+		createPostIt('b', 301, 400)
+
+		const { distance, influence } = entry('a', 'b')
+
+		expect(Number.isInteger(distance)).toBe(true)
+		expect(influence).toBe(Math.round(influence * 1000) / 1000)
+	})
+
+	it('stores nothing: the influence never reaches a shape or a node', () => {
+		createPostIt('a', 0, 0, 500)
+		createPostIt('b', 250, 0, 500)
+
+		expect(entry('a', 'b').influence).toBeGreaterThan(0)
+
+		for (const shape of editor.getCurrentPageShapes()) {
+			expect(JSON.stringify(shape.meta)).not.toContain('influence')
+		}
+		for (const node of Object.values(getCanvasDocument(editor).nodes)) {
+			expect(node).not.toHaveProperty('influence')
+			expect(node).not.toHaveProperty('spatialContext')
+		}
+	})
+
+	it('keeps relations separate, and infers none from proximity', () => {
+		// Two nodes deep inside each other's fields still produce no relation.
+		createPostIt('a', 0, 0, 500)
+		createPostIt('b', 10, 0, 500)
+
+		const document = getCanvasDocument(editor)
+
+		expect(document.spatialContext.influences[0].influence).toBeGreaterThan(0.9)
+		expect(document.relations).toEqual({})
+		expect(JSON.stringify(document.spatialContext)).not.toContain('type')
+	})
+
+	it('is output, not input: an imported spatialContext is recomputed', () => {
+		createPostIt('a', 0, 0, 500)
+		createPostIt('b', 250, 0)
+
+		// What the Inspector's import path does — it reads `nodes` and nothing else.
+		const exported = JSON.parse(JSON.stringify(getCanvasDocument(editor))) as CanvasDocument
+		exported.spatialContext = {
+			influences: [{ source: 'a', target: 'b', distance: 9, influence: 9 }],
+		}
+
+		editor.deleteShapes(editor.getCurrentPageShapes().map((shape) => shape.id))
+		editor.createShapes(
+			Object.values(exported.nodes).map((node) => ({
+				...nodeToShape(node),
+				parentId: editor.getCurrentPageId(),
+			}))
+		)
+
+		// The nonsense values are gone; the radius that survived the import drives
+		// a freshly derived context.
+		expect(entry('a', 'b').influence).toBeCloseTo(0.5)
+	})
+
+	it('lays the document out as three distinct layers', () => {
+		createPostIt('a', 0, 0, 500)
+
+		expect(Object.keys(getCanvasDocument(editor))).toEqual([
+			'id',
+			'nodes',
+			'relations',
+			'spatialContext',
+			'metadata',
+		])
 	})
 })
 

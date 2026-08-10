@@ -14,7 +14,6 @@
 import { useState } from 'react'
 import { useEditor } from 'tldraw'
 import type { CanvasDocument, CanvasNode, SpatialInfluence } from '@/domain'
-import { calculateSpatialInfluences } from '@/domain'
 import { useCanvasDocument } from '@/canvas/adapter/canvasView'
 import { nodeToShape } from '@/canvas/adapter/adapter'
 import { restoringNodes } from '@/canvas/adapter/metadata'
@@ -153,8 +152,11 @@ export function InspectorPanel() {
 function InfluenceSection({ canvas }: { canvas: CanvasDocument }) {
 	const [isOpen, setIsOpen] = useState(true)
 
+	// Read from the document rather than recomputed here: the influence table and
+	// the JSON above it are then the same numbers by construction, so they can't
+	// drift apart or round differently.
 	const nodes = Object.values(canvas.nodes)
-	const influences = calculateSpatialInfluences(nodes)
+	const influences = canvas.spatialContext.influences
 	const sorted = [...influences].sort((a, b) => b.influence - a.influence)
 	const active = sorted.filter((row) => row.influence > 0).length
 
@@ -194,7 +196,7 @@ function InfluenceSection({ canvas }: { canvas: CanvasDocument }) {
 							<tbody>
 								{sorted.map((row) => (
 									<InfluenceRow
-										key={`${row.sourceId}→${row.targetId}`}
+										key={`${row.source}→${row.target}`}
 										row={row}
 										nodes={canvas.nodes}
 									/>
@@ -212,10 +214,11 @@ function InfluenceRow({ row, nodes }: { row: SpatialInfluence; nodes: CanvasDocu
 	return (
 		<tr style={{ opacity: row.influence > 0 ? 1 : 0.4 }}>
 			<td>
-				{nodeLabel(nodes[row.sourceId])} → {nodeLabel(nodes[row.targetId])}
+				{nodeLabel(nodes[row.source])} → {nodeLabel(nodes[row.target])}
 			</td>
-			{/* Rounded for reading only — the values themselves stay exact. */}
-			<td style={{ textAlign: 'right' }}>{Math.round(row.distance)}</td>
+			{/* Already rounded by `buildSpatialContext` — shown verbatim so the
+			    table and the JSON above are literally the same numbers. */}
+			<td style={{ textAlign: 'right' }}>{row.distance}</td>
 			<td style={{ textAlign: 'right' }}>{row.influence.toFixed(3)}</td>
 		</tr>
 	)

@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest'
 import { createPostItNode, type PostItNode } from '@/domain/node'
 import {
+	buildSpatialContext,
 	calculateSpatialInfluence,
 	calculateSpatialInfluences,
 	distanceBetweenNodes,
@@ -167,7 +168,7 @@ describe('calculateSpatialInfluences', () => {
 
 		// N² − N.
 		expect(result).toHaveLength(6)
-		expect(result.map((row) => `${row.sourceId}${row.targetId}`)).toEqual([
+		expect(result.map((row) => `${row.source}${row.target}`)).toEqual([
 			'ab',
 			'ac',
 			'ba',
@@ -180,16 +181,16 @@ describe('calculateSpatialInfluences', () => {
 	it('reports asymmetric influence for the same pair', () => {
 		const result = calculateSpatialInfluences([a, b])
 
-		expect(result[0]).toMatchObject({ sourceId: 'a', targetId: 'b' })
+		expect(result[0]).toMatchObject({ source: 'a', target: 'b' })
 		expect(result[0].influence).toBeCloseTo(0.8)
-		expect(result[1]).toMatchObject({ sourceId: 'b', targetId: 'a' })
+		expect(result[1]).toMatchObject({ source: 'b', target: 'a' })
 		expect(result[1].influence).toBeCloseTo(0.5)
 	})
 
 	it('keeps zero-influence rows, with a real distance on them', () => {
 		// c has no field, so it influences nothing — but "out of range" and "we
 		// didn't look" have to stay distinguishable.
-		const rows = calculateSpatialInfluences([a, b, c]).filter((row) => row.sourceId === 'c')
+		const rows = calculateSpatialInfluences([a, b, c]).filter((row) => row.source === 'c')
 
 		expect(rows).toHaveLength(2)
 		expect(rows.every((row) => row.influence === 0)).toBe(true)
@@ -210,6 +211,81 @@ describe('calculateSpatialInfluences', () => {
 
 		expect(JSON.parse(JSON.stringify(nodes))).toEqual(before)
 		expect(JSON.stringify(nodes)).not.toContain('influence')
+	})
+})
+
+describe('buildSpatialContext', () => {
+	const a = node({ id: 'a', x: 0, radius: 500 })
+	const b = node({ id: 'b', x: 100, radius: 200 })
+	const c = node({ id: 'c', x: 400 })
+
+	it('wraps the influences in a spatialContext, and keeps every pair', () => {
+		const context = buildSpatialContext([a, b, c])
+
+		expect(Object.keys(context)).toEqual(['influences'])
+		expect(context.influences).toHaveLength(6)
+	})
+
+	it('is an empty list, not a missing key, for an empty canvas', () => {
+		// A reader needs to see "nothing influences anything" rather than have to
+		// infer it from an absent field.
+		expect(buildSpatialContext([])).toEqual({ influences: [] })
+		expect(buildSpatialContext([a])).toEqual({ influences: [] })
+	})
+
+	it('uses source/target, the names the canonical JSON promises', () => {
+		expect(Object.keys(buildSpatialContext([a, b]).influences[0]).sort()).toEqual([
+			'distance',
+			'influence',
+			'source',
+			'target',
+		])
+	})
+
+	it('rounds distance to whole units and influence to three decimals', () => {
+		// 300/400/500 is the exact triangle; nudge it so rounding is observable.
+		const near = node({ id: 'near', x: 0, radius: 700 })
+		const far = node({ id: 'far', x: 301, y: 400 })
+
+		const [entry] = buildSpatialContext([near, far]).influences
+
+		expect(entry.distance).toBe(Math.round(distanceBetweenNodes(near, far)))
+		expect(Number.isInteger(entry.distance)).toBe(true)
+		expect(entry.influence).toBe(Math.round(calculateSpatialInfluence(near, far) * 1000) / 1000)
+		expect(String(entry.influence).replace(/^[^.]*\.?/, '').length).toBeLessThanOrEqual(3)
+	})
+
+	it('leaves the exact values alone — rounding is the document, not the maths', () => {
+		const source = node({ id: 'source', x: 0, radius: 700 })
+		const target = node({ id: 'target', x: 301, y: 400 })
+
+		const exact = calculateSpatialInfluences([source, target])[0]
+		const rounded = buildSpatialContext([source, target]).influences[0]
+
+		expect(Number.isInteger(exact.distance)).toBe(false)
+		expect(rounded.distance).not.toBe(exact.distance)
+	})
+
+	it('is deterministic', () => {
+		expect(buildSpatialContext([a, b, c])).toEqual(buildSpatialContext([a, b, c]))
+	})
+
+	it('writes nothing back into the nodes', () => {
+		const nodes = [a, b, c]
+		const before = JSON.parse(JSON.stringify(nodes))
+
+		buildSpatialContext(nodes)
+
+		expect(JSON.parse(JSON.stringify(nodes))).toEqual(before)
+	})
+
+	it('infers no semantic relation from proximity', () => {
+		// The distinction the whole model rests on: proximity produces a number,
+		// never a named relationship.
+		const json = JSON.stringify(buildSpatialContext([a, b, c]))
+
+		expect(json).not.toContain('type')
+		expect(json).not.toContain('related')
 	})
 })
 

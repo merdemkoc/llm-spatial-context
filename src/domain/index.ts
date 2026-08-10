@@ -27,9 +27,10 @@ export {
 	POST_IT_DEFAULT_WIDTH,
 } from '@/domain/node'
 
-export type { Point, SpatialInfluence } from '@/domain/spatialInfluence'
+export type { Point, SpatialContext, SpatialInfluence } from '@/domain/spatialInfluence'
 
 export {
+	buildSpatialContext,
 	calculateSpatialInfluence,
 	calculateSpatialInfluences,
 	distanceBetweenNodes,

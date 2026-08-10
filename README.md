@@ -46,12 +46,40 @@ tldraw's store is the single runtime store; the canonical Canvas is a derived vi
 
 A Node may declare a `contextualField.radius` in world coordinates. From that, `spatialInfluence.ts` derives how much one Node influences another: linear falloff over centre-to-centre distance, `1` when the centres coincide and `0` at or beyond the radius.
 
-Influence is **derived, never stored**. It is a function of two Nodes' geometry plus the source's radius, so moving a Node changes its context with no state to invalidate — nothing writes an `influence` field back into the canonical JSON. It is also directional: two Nodes with different radii influence each other by different amounts, without any semantic relation being involved.
+Influence is **derived, never stored**. It is a function of two Nodes' geometry plus the source's radius, so moving a Node changes its context with no state to invalidate — nothing writes an `influence` field into a Node. It is also directional: two Nodes with different radii influence each other by different amounts, without any semantic relation being involved.
 
 Two details worth knowing:
 
 - The radius is optional and **never defaulted**. A Node with no field exerts no influence, which is a different claim from a Node with a small one.
 - The centre is rotation-aware. `SpatialProperties.rotation` is applied about the top-left corner, so `x + width / 2` is only the centre of an unrotated box.
+
+### Three layers of context
+
+A `CanvasDocument` deliberately separates what it knows about a canvas into three kinds of claim, so a reader — a person or a model — can tell them apart instead of receiving them pre-mixed:
+
+| Layer                       | Where                                        | Answers                                                        |
+| --------------------------- | -------------------------------------------- | -------------------------------------------------------------- |
+| Node spatial state          | `nodes[].spatial`, `nodes[].contextualField` | Where is it, how big, how far does it reach?                   |
+| Spatially derived context   | `spatialContext.influences`                  | How far apart are they, how strongly does one reach the other? |
+| Explicit semantic relations | `relations`                                  | What did the user actually connect, and call it?               |
+
+```json
+{
+	"nodes": {
+		"node-a": { "spatial": { "x": 300, "y": 200, "…": "…" }, "contextualField": { "radius": 500 } }
+	},
+	"relations": { "relation-1": { "from": "node-a", "to": "node-b", "type": "causes" } },
+	"spatialContext": {
+		"influences": [{ "source": "node-a", "target": "node-b", "distance": 326, "influence": 0.349 }]
+	}
+}
+```
+
+**Proximity never becomes a relation.** Nothing infers `related_to`, or any other type, from two Nodes being close. `relations` is what the user said; `spatialContext` is what the layout implies and nobody named.
+
+`spatialContext` is assembled in `getCanvasDocument`, the one place a document is built, which is why it needs no invalidation logic and no manual trigger — a move, a resize, a radius change, an addition or a deletion all produce a fresh document. It is **output, not input**: importing a document ignores whatever `spatialContext` it carried and derives a new one from the Nodes.
+
+Every directed pair is emitted, including out-of-range ones at `influence: 0`, so "these are too far apart" stays distinguishable from "this pair wasn't considered". That is `N² − N` entries. Distance is rounded to whole units and influence to three decimals in the document; `calculateSpatialInfluences` stays exact for anything doing further arithmetic.
 
 ## Layout
 
@@ -62,8 +90,8 @@ src/
   index.css                    Global styles + tldraw.css import
   domain/                      The canonical model — no tldraw imports, ever
     node.ts                    CanvasNode, spatial/visual/metadata, createPostItNode
-    canvas.ts                  CanvasDocument, Relation placeholder
-    spatialInfluence.ts        Node centre, distance, derived spatial influence
+    canvas.ts                  CanvasDocument — nodes, relations, spatialContext
+    spatialInfluence.ts        Node centre, distance, influence, buildSpatialContext
   canvas/
     Canvas.tsx                 The <Tldraw /> wrapper — persistence, onMount hook
     config.tsx                 Module-scope shape utils, tools, UI overrides and toolbar

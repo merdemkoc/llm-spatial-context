@@ -14,15 +14,34 @@
  */
 import type { CanvasNode, NodeId } from '@/domain/node'
 
+/**
+ * One directed spatial relationship.
+ *
+ * These field names are the contract with whatever reads the canonical JSON, so
+ * they stay `source`/`target` rather than anything more internal-sounding.
+ */
 export interface SpatialInfluence {
-	sourceId: NodeId
-	targetId: NodeId
+	source: NodeId
+	target: NodeId
 
 	/** World units, centre to centre. Independent of either node's radius. */
 	distance: number
 
 	/** 0–1. Directional: it depends on the *source's* radius, not the target's. */
 	influence: number
+}
+
+/**
+ * The derived spatial layer of a Canvas.
+ *
+ * Deliberately separate from `relations`, and the separation is the point:
+ * `relations` are what the user said explicitly, `spatialContext` is what the
+ * canvas layout implies. Proximity never becomes a semantic relation — nothing
+ * here infers `related_to` or anything like it — so a reader can tell the two
+ * kinds of signal apart instead of having them pre-mixed.
+ */
+export interface SpatialContext {
+	influences: SpatialInfluence[]
 }
 
 export interface Point {
@@ -118,8 +137,8 @@ export function calculateSpatialInfluences(nodes: CanvasNode[]): SpatialInfluenc
 			const target = nodes[j]
 
 			influences.push({
-				sourceId: source.id,
-				targetId: target.id,
+				source: source.id,
+				target: target.id,
 				distance: distanceBetweenNodes(source, target),
 				influence: calculateSpatialInfluence(source, target),
 			})
@@ -127,4 +146,32 @@ export function calculateSpatialInfluences(nodes: CanvasNode[]): SpatialInfluenc
 	}
 
 	return influences
+}
+
+/** World units. Sub-pixel precision says nothing a reader can act on. */
+const DISTANCE_PRECISION = 0
+/** Enough to see a falloff curve move; beyond this it's float noise. */
+const INFLUENCE_PRECISION = 3
+
+function round(value: number, decimals: number): number {
+	const factor = 10 ** decimals
+	return Math.round(value * factor) / factor
+}
+
+/**
+ * The spatial context that goes into the canonical JSON.
+ *
+ * Rounded, unlike `calculateSpatialInfluences`. The raw values are exact and
+ * stay that way for anything doing further arithmetic; this is the presentation
+ * of them, and `0.6399999999999999` is noise in a document meant to be read.
+ * Rounding happens once, here, so the JSON and the UI can't disagree.
+ */
+export function buildSpatialContext(nodes: CanvasNode[]): SpatialContext {
+	return {
+		influences: calculateSpatialInfluences(nodes).map((entry) => ({
+			...entry,
+			distance: round(entry.distance, DISTANCE_PRECISION),
+			influence: round(entry.influence, INFLUENCE_PRECISION),
+		})),
+	}
 }
