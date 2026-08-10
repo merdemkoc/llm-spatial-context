@@ -13,8 +13,10 @@ export default defineConfig({
 	},
 	test: {
 		// The adapter and domain layers are free of tldraw runtime imports, so
-		// the round-trip tests need no DOM.
+		// the round-trip tests need no DOM. The few suites that drive a real
+		// editor or render a component opt into jsdom with a
+		// `@vitest-environment jsdom` docblock.
 		environment: 'node',
-		include: ['src/**/*.test.ts'],
+		include: ['src/**/*.test.{ts,tsx}'],
 	},
 })
