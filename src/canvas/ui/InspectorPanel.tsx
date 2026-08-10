@@ -18,6 +18,7 @@ import { useCanvasDocument } from '@/canvas/adapter/canvasView'
 import { nodeToShape } from '@/canvas/adapter/adapter'
 import { restoringNodes } from '@/canvas/adapter/metadata'
 import { isPostItShape } from '@/canvas/shapes/postItShape'
+import { exportGroundedScreenshot } from '@/canvas/grounding/groundedExport'
 
 export function InspectorPanel() {
 	const editor = useEditor()
@@ -26,8 +27,28 @@ export function InspectorPanel() {
 	const [isOpen, setIsOpen] = useState(false)
 	const [draft, setDraft] = useState<string | null>(null)
 	const [error, setError] = useState<string | null>(null)
+	const [isGrounding, setIsGrounding] = useState(false)
 
 	const json = JSON.stringify(canvas, null, 2)
+	const nodeCount = Object.keys(canvas.nodes).length
+
+	/**
+	 * Rasterising is slow enough to be visible, and the failure modes are real
+	 * (a tainted canvas, an image tldraw couldn't build), so the state goes to
+	 * the panel's existing error line rather than to a console nobody reads.
+	 */
+	async function handleGroundedScreenshot() {
+		setIsGrounding(true)
+		setError(null)
+
+		try {
+			await exportGroundedScreenshot(editor)
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : 'Could not export a grounded screenshot')
+		} finally {
+			setIsGrounding(false)
+		}
+	}
 
 	function handleImport() {
 		if (draft === null) return
@@ -107,8 +128,7 @@ export function InspectorPanel() {
 		>
 			<div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
 				<strong style={{ flex: 1 }}>
-					Canvas · {Object.keys(canvas.nodes).length} node
-					{Object.keys(canvas.nodes).length === 1 ? '' : 's'}
+					Canvas · {nodeCount} node{nodeCount === 1 ? '' : 's'}
 				</strong>
 				<button onClick={() => navigator.clipboard.writeText(json)} style={buttonStyle}>
 					Copy
@@ -120,6 +140,17 @@ export function InspectorPanel() {
 					Close
 				</button>
 			</div>
+
+			{/* Its own row: the label has to say what comes out, and there is no room
+			    for that beside three other buttons in a 380px panel. */}
+			<button
+				onClick={handleGroundedScreenshot}
+				disabled={isGrounding || nodeCount === 0}
+				title="A PNG of the canvas with every node outlined and labelled, plus this JSON with an N1/N2/N3 → node id map"
+				style={buttonStyle}
+			>
+				{isGrounding ? 'Rendering…' : 'Grounded screenshot · PNG + JSON'}
+			</button>
 
 			{draft === null ? (
 				<pre style={preStyle}>{json}</pre>

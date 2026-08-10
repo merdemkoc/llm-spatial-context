@@ -81,6 +81,26 @@ A `CanvasDocument` deliberately separates what it knows about a canvas into thre
 
 Every directed pair is emitted, including out-of-range ones at `influence: 0`, so "these are too far apart" stays distinguishable from "this pair wasn't considered". That is `N² − N` entries. Distance is rounded to whole units and influence to three decimals in the document; `calculateSpatialInfluences` stays exact for anything doing further arithmetic.
 
+### Grounded screenshot
+
+The three layers above are all _propositional_ — they say where a Node is and what reaches it. What they can't say is which pixels it occupies. A model handed a screenshot and the JSON has to work that out from coordinates, and inferring it is exactly the kind of guess the rest of this design removes.
+
+**Grounded screenshot** (in the Inspector panel) closes that gap. It exports a PNG of the canvas with every Node outlined and labelled `N1`, `N2`, `N3`, alongside a JSON artifact carrying the map:
+
+```json
+"grounding": { "N1": "aeb30231-…", "N2": "cb19cf1f-…", "N3": "239a3b4e-…" }
+```
+
+The same Node is then reachable three ways: **semantic** (`content.text`), **spatial** (`spatial`, plus the derived `spatialContext`), and **visual** (the outlined region of the image).
+
+The layer is an _index, not an interpretation_. It draws boxes and labels and nothing else — no relation lines, no influence rings, no distance markers. Those claims already exist in `relations` and `spatialContext`, and drawing them would mix a reading of the canvas into what is meant to be a lookup table between pixels and ids. Nothing is drawn filled either, so the canvas underneath survives intact.
+
+Three things about it are worth knowing:
+
+- **`grounding` is an export concern, not a canonical layer.** It describes one image, not the canvas, so it is absent from `CanvasDocument` and added only to the artifact — a superset the Inspector's import still accepts. `N1` is **a position within one export, not an identity**: moving a Node can renumber every label, and the node id remains the only stable handle.
+- **The image covers every Node, not the viewport.** Bounds come from the Nodes themselves, expanded by `GROUNDING_PADDING`, so a Node parked far off screen is still in the picture. Grounding something that isn't visible would be worse than not grounding it.
+- **The scale is measured, never assumed.** `toImage` reports the _logical_ size it rendered at, while `scale`, `pixelRatio`, flooring and the browser's maximum canvas size all sit between that and the actual blob. `imageScale` derives pixels-per-world-unit from the decoded bitmap and throws if the two axes disagree by more than a pixel across the image — a box in the wrong place is worse than no box, so a mismatch fails loudly instead of drawing.
+
 ## Layout
 
 ```
@@ -107,8 +127,13 @@ src/
       postItStyles.ts          Raw-hex StyleProps for fill / stroke / text
       PostItShapeUtil.tsx      Rendering, geometry, resize, text editing
       PostItTool.ts            Creates the Node first, then projects it
+    grounding/                 Node ⇄ pixels, for the grounded screenshot
+      visualId.ts              assignVisualIds — N1/N2/N3 in reading order
+      projection.ts            World ⇄ image: bounds, rotated corners, measured scale
+      annotationLayer.ts       Draws the outlines and labels onto a 2D context
+      groundedExport.ts        toImage, composite, save the PNG + JSON pair
     ui/
-      InspectorPanel.tsx       Live canonical JSON + derived influence table
+      InspectorPanel.tsx       Live canonical JSON, influence table, grounded export
       PostItStylePanel.tsx     Colour controls, and hosts the field control
       ContextualFieldControl.tsx  Radius input for the selection
 ```
@@ -130,18 +155,22 @@ Imports resolve `@/` to `src/`, e.g. `import { Canvas } from '@/canvas/Canvas'`.
 - **One Canvas is one tldraw page.** The page menu is hidden to keep that true.
 - **`shape.meta` has no _schema_, but its values are still validated.** Custom meta validators need `createTLSchema`, which needs the `store` prop, which is mutually exclusive with `persistenceKey` — so nothing checks that `contextualField` looks the way we expect, and the adapter reads meta defensively instead. What _is_ enforced is `T.jsonValue`: the record validator walks meta and rejects the whole write with `Expected json serializable value` if it finds an `undefined` anywhere. Use `null` to mean "absent" in a meta patch, never `undefined`.
 - **Meta patches are shallow-merged, key by key.** `editor.updateShapes` merges `meta` onto the existing meta (`applyPartialToRecordWithProps`), so omitting a key keeps its old value rather than removing it. Clearing a field has to be written explicitly — see `contextualFieldPatch`.
+- **Visual ids have no row banding.** Reading order compares centre `y` strictly, so notes laid out in a row with tops jittered by a few pixels are numbered by that jitter rather than left to right. Deterministic, but not always what a human reads. A tolerance band would fix it and needs a magic constant, so it is not in the MVP.
+- **A grounded export downloads two files from one click**, which Chrome may ask permission for the first time.
 
 ## Testing
 
 `npm test` runs three layers, because the first one alone turned out not to be enough — two bugs shipped that were invisible to pure tests (a meta write the record validator rejected, and a control whose commit was destroyed by the selection change that triggered it).
 
-| Layer              | Files                                         | Environment                |
-| ------------------ | --------------------------------------------- | -------------------------- |
-| Pure               | `domain/*.test.ts`, `adapter/adapter.test.ts` | `node` — no DOM, no editor |
-| Real editor        | `adapter/editor.test.ts`                      | `jsdom`                    |
-| Rendered component | `ui/*.test.tsx`                               | `jsdom`                    |
+| Layer              | Files                                                                                                    | Environment                |
+| ------------------ | -------------------------------------------------------------------------------------------------------- | -------------------------- |
+| Pure               | `domain/*.test.ts`, `adapter/adapter.test.ts`, `grounding/{visualId,projection,annotationLayer}.test.ts` | `node` — no DOM, no editor |
+| Real editor        | `adapter/editor.test.ts`, `grounding/groundedExport.test.ts`                                             | `jsdom`                    |
+| Rendered component | `ui/*.test.tsx`                                                                                          | `jsdom`                    |
 
-The default environment is `node`; the two DOM suites opt in with a `@vitest-environment jsdom` docblock. That keeps the pure layer honest: `src/domain`, `src/canvas/adapter` and `postItShape.ts` import tldraw for _types only_, and adding a runtime tldraw import to any of them will break it.
+The default environment is `node`; the DOM suites opt in with a `@vitest-environment jsdom` docblock. That keeps the pure layer honest: `src/domain`, `src/canvas/adapter` and `postItShape.ts` import tldraw for _types only_, and adding a runtime tldraw import to any of them will break it.
+
+Rasterising is the one thing no layer covers: `toImage` and `createImageBitmap` need a real browser. That is why the grounding module is split the way it is — every decision that could put a box in the wrong place lives in a pure function, and `groundedExport.ts` is left holding only the browser calls. `annotationLayer.ts` is typed against a structural subset of `CanvasRenderingContext2D` so a recorder can stand in for one, rather than adding a native canvas build to check that four `lineTo` calls happened.
 
 The editor layer constructs a real `Editor` over a `createTLStore` with no React at all, which is what makes "does this actually reach the canonical Canvas" testable. Anything that writes through the editor belongs in `adapter/` rather than in a component, so it can be tested there — `contextualField.ts` exists for exactly that reason.
 
