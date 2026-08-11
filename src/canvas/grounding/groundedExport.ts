@@ -25,7 +25,8 @@ import {
 } from '@/canvas/grounding/annotationLayer'
 import { buildGrounding, groundedDocument, relationAnnotations } from '@/canvas/grounding/grounding'
 import { groundingProjection, imageScale, nodeImageQuad } from '@/canvas/grounding/projection'
-import { assignVisualIds } from '@/canvas/grounding/visualId'
+import { assignRelationVisualIds, assignVisualIds } from '@/canvas/grounding/visualId'
+import { getRelationGeometry } from '@/canvas/adapter/relationGeometry'
 
 export interface GroundedScreenshot {
 	png: Blob
@@ -53,7 +54,17 @@ export async function buildGroundedScreenshot(editor: Editor): Promise<GroundedS
 	// give the same answer today — it's pure — but it would leave "the boxes and
 	// the map agree" as a coincidence rather than a fact.
 	const labelled = assignVisualIds(nodes)
-	const projection = groundingProjection(nodes, GROUNDING_PADDING)
+
+	// Measured once and used three times: to size the export box, to place each
+	// badge, and to fill `grounding.relations`. Reading it separately per use would
+	// let the badge drawn on the PNG and the badge point in the JSON disagree.
+	const geometry = getRelationGeometry(editor, canvas.relations)
+	const labelledRelations = assignRelationVisualIds(geometry)
+
+	// Sized to hold the arrows as well as the nodes. A relation drawn as a curve
+	// bows outside the box its endpoints span, and an export sized to the nodes cut
+	// that overhang off the edge of the image while still drawing the rest of it.
+	const projection = groundingProjection(nodes, GROUNDING_PADDING, geometry)
 
 	// Every shape on the page, not just the post-its. The image is the canvas as
 	// it is — a user's arrows and drawings belong in it — and the grounding layer
@@ -82,11 +93,12 @@ export async function buildGroundedScreenshot(editor: Editor): Promise<GroundedS
 
 		// The arrows are already in the image — they are canvas content — so what the
 		// layer adds is which of the JSON's relations each one is, and at what
-		// strength. Read from the document rather than from the arrow shapes, so the
-		// badge and the `relations` block cannot say different numbers.
+		// strength. The gravity is read from the document so the badge and the
+		// `relations` block cannot say different numbers; the *position* comes from the
+		// measured path, so the badge lands on the arrow it names.
 		const relations: RelationAnnotation[] = relationAnnotations(
 			canvas.relations,
-			canvas.nodes,
+			labelledRelations,
 			projection,
 			scale
 		)
@@ -96,7 +108,10 @@ export async function buildGroundedScreenshot(editor: Editor): Promise<GroundedS
 		// in the same pixel space as the outline in the PNG.
 		return {
 			png: await composite(bitmap, annotations, scale, relations),
-			document: groundedDocument(canvas, buildGrounding(labelled, projection, bitmap)),
+			document: groundedDocument(
+				canvas,
+				buildGrounding(labelled, projection, bitmap, labelledRelations)
+			),
 		}
 	} finally {
 		bitmap.close()

@@ -11,8 +11,7 @@
  * maximum canvas size, so the only trustworthy pixels-per-world-unit is the one
  * measured from the decoded image. It is passed in per call.
  */
-import type { CanvasNode, Point } from '@/domain'
-import { nodeCenter } from '@/domain'
+import type { CanvasNode, Point, RelationGeometry } from '@/domain'
 
 /** The world-space rectangle an exported image covers. */
 export interface GroundingProjection {
@@ -49,22 +48,44 @@ export function nodeCorners(node: CanvasNode): Point[] {
 }
 
 /**
- * The world rectangle to export, sized to hold every node.
+ * The world rectangle to export, sized to hold every node **and every arrow**.
  *
  * Unions the *rotated* corners rather than the `x/y/width/height` boxes.
  * Rotation sweeps a node outside its unrotated box, so unioning the boxes would
  * clip a rotated node at the edge of the canvas — and grounding a node that
  * isn't in the image is worse than not grounding it.
+ *
+ * Arrows are unioned in for exactly the same reason, and it is not a hypothetical:
+ * a relation drawn as a curve bows outside the box its two endpoints span, so an
+ * export sized to the nodes alone cut the overhang off the edge of the PNG while
+ * still drawing the rest of the arrow. Half a visible arrow is a worse artifact
+ * than a slightly larger image.
+ *
+ * `relations` is optional and last, so a caller with nothing to say about arrows
+ * gets exactly the box this returned before arrows were considered.
  */
-export function groundingProjection(nodes: CanvasNode[], padding: number): GroundingProjection {
+export function groundingProjection(
+	nodes: CanvasNode[],
+	padding: number,
+	relations: RelationGeometry[] = []
+): GroundingProjection {
 	// `Math.min` of nothing is `Infinity`. An empty canvas has no meaningful
 	// bounds, and an empty box says so; infinite ones would travel a long way
 	// into an export before failing.
+	//
+	// Keyed on nodes, not on nodes-plus-arrows: an arrow with no node at either end
+	// is not something this layer grounds, and sizing an export around one would
+	// produce a picture of a line pointing at nothing.
 	if (nodes.length === 0) return { minX: 0, minY: 0, width: 0, height: 0 }
 
 	const corners = nodes.flatMap(nodeCorners)
 	const xs = corners.map((corner) => corner.x)
 	const ys = corners.map((corner) => corner.y)
+
+	for (const relation of relations) {
+		xs.push(relation.bounds.minX, relation.bounds.maxX)
+		ys.push(relation.bounds.minY, relation.bounds.maxY)
+	}
 
 	const minX = Math.min(...xs) - padding
 	const minY = Math.min(...ys) - padding
@@ -131,29 +152,46 @@ export function toImagePoint(point: Point, projection: GroundingProjection, scal
 }
 
 /**
- * Where a relation between two nodes reads, in image pixels: the midpoint of
- * their centres.
+ * Where a relation's badge goes, in image pixels: a point **on the drawn path**.
  *
- * Derived from the two nodes rather than measured from the arrow shape, which
- * keeps this pure and keeps the position **re-derivable by a reader** — the same
- * midpoint follows from `nodes[].spatial` and `grounding` alone, so a badge on the
- * PNG can be checked against the JSON instead of trusted.
+ * This used to be synthesised — the midpoint of the two node centres — so that a
+ * reader could recompute it from `nodes[].spatial` alone. That re-derivability was
+ * real, and it was bought at a price that turned out to be too high: a curved or
+ * elbowed arrow never passes through that midpoint, so the badge floated in empty
+ * space, and in a real export it landed on an unrelated node's label and read as
+ * that node's gravity. A badge that names the wrong thing is worse than one a
+ * reader has to be told the position of.
  *
- * The cost is a bent or elbow arrow, whose curve leaves the straight line between
- * the centres: the badge stays at the midpoint and the arrow doesn't pass through
- * it. Following the drawn curve would mean reading tldraw's arrow geometry, which
- * this layer deliberately can't see.
+ * So the position is measured from the path by the renderer and passed in, and
+ * `grounding.relations[].badge` states where it ended up. The check a reader could
+ * do by recomputing, they now do by reading.
  */
 export function relationImagePoint(
-	from: CanvasNode,
-	to: CanvasNode,
+	relation: RelationGeometry,
 	projection: GroundingProjection,
 	scale: number
 ): Point {
-	const start = nodeCenter(from)
-	const end = nodeCenter(to)
+	return toImagePoint(relation.midpoint, projection, scale)
+}
 
-	return toImagePoint({ x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }, projection, scale)
+/**
+ * `[x1, y1, x2, y2]` in image pixels — the arrow's path, curve included.
+ *
+ * Deliberately the *path's* box and not the box its endpoints span. For a bowed
+ * arrow those differ by the whole bow, and the smaller one would describe a region
+ * the arrow leaves.
+ */
+export function relationImageAabb(
+	relation: RelationGeometry,
+	projection: GroundingProjection,
+	scale: number
+): [number, number, number, number] {
+	const { minX, minY, maxX, maxY } = relation.bounds
+
+	const topLeft = toImagePoint({ x: minX, y: minY }, projection, scale)
+	const bottomRight = toImagePoint({ x: maxX, y: maxY }, projection, scale)
+
+	return [topLeft.x, topLeft.y, bottomRight.x, bottomRight.y]
 }
 
 /** The node's outline in image pixels, clockwise from the top-left. */

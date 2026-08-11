@@ -229,7 +229,7 @@ describe('spatialContext in the canonical document', () => {
 	})
 
 	it('is present and empty rather than absent on a bare canvas', () => {
-		expect(context()).toEqual({ influences: [] })
+		expect(context()).toEqual({ influences: [], effectiveStrengths: [] })
 	})
 
 	it('recalculates when a node moves — closer means more influence', () => {
@@ -348,6 +348,17 @@ describe('spatialContext in the canonical document', () => {
 		const exported = JSON.parse(JSON.stringify(getCanvasDocument(editor))) as CanvasDocument
 		exported.spatialContext = {
 			influences: [{ source: 'a', target: 'b', distance: 9, influence: 9 }],
+			effectiveStrengths: [
+				{
+					source: 'a',
+					target: 'b',
+					influence: 9,
+					gravity: 9,
+					effectiveStrength: 9,
+					strategy: 'product',
+					relations: ['nonsense'],
+				},
+			],
 		}
 
 		editor.deleteShapes(editor.getCurrentPageShapes().map((shape) => shape.id))
@@ -439,6 +450,7 @@ describe('grounding in the canonical document', () => {
 		exported.grounding = {
 			image: { width: 1, height: 1 },
 			nodes: { N9: { nodeId: 'nonsense', bbox: [1, 2, 3, 4] } },
+			relations: { R9: { relationId: 'nonsense', bbox: [1, 2, 3, 4], badge: [1, 2] } },
 		}
 
 		editor.deleteShapes(editor.getCurrentPageShapes().map((shape) => shape.id))

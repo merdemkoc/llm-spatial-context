@@ -222,15 +222,22 @@ describe('buildSpatialContext', () => {
 	it('wraps the influences in a spatialContext, and keeps every pair', () => {
 		const context = buildSpatialContext([a, b, c])
 
-		expect(Object.keys(context)).toEqual(['influences'])
+		expect(Object.keys(context)).toEqual(['influences', 'effectiveStrengths'])
 		expect(context.influences).toHaveLength(6)
 	})
 
 	it('is an empty list, not a missing key, for an empty canvas', () => {
 		// A reader needs to see "nothing influences anything" rather than have to
 		// infer it from an absent field.
-		expect(buildSpatialContext([])).toEqual({ influences: [] })
-		expect(buildSpatialContext([a])).toEqual({ influences: [] })
+		expect(buildSpatialContext([])).toEqual({ influences: [], effectiveStrengths: [] })
+		expect(buildSpatialContext([a])).toEqual({ influences: [], effectiveStrengths: [] })
+	})
+
+	it('leaves effectiveStrengths empty when no relations are passed', () => {
+		// Proximity alone never produces a combined row: with no arrow there is no
+		// intent to combine, and inventing a gravity of 0 for every close pair would
+		// be exactly the inference the model refuses to make.
+		expect(buildSpatialContext([a, b, c]).effectiveStrengths).toEqual([])
 	})
 
 	it('uses source/target, the names the canonical JSON promises', () => {

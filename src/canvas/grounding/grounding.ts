@@ -18,19 +18,26 @@ import type {
 	CanvasNode,
 	Grounding,
 	GroundedNodeRegion,
+	GroundedRelationRegion,
 	ImageSize,
-	NodeId,
 	Relation,
+	RelationGeometry,
 	RelationId,
 	VisualId,
 } from '@/domain'
 import {
 	groundingProjection,
 	nodeImageAabb,
+	relationImageAabb,
 	relationImagePoint,
 	type GroundingProjection,
 } from '@/canvas/grounding/projection'
-import { assignVisualIds, type GroundedNode } from '@/canvas/grounding/visualId'
+import {
+	assignRelationVisualIds,
+	assignVisualIds,
+	type GroundedNode,
+	type GroundedRelation,
+} from '@/canvas/grounding/visualId'
 import { GROUNDING_PADDING, type RelationAnnotation } from '@/canvas/grounding/annotationLayer'
 
 /**
@@ -71,9 +78,11 @@ function round(bbox: [number, number, number, number]): [number, number, number,
 export function buildGrounding(
 	labelled: GroundedNode[],
 	projection: GroundingProjection,
-	image: ImageSize
+	image: ImageSize,
+	labelledRelations: GroundedRelation[] = []
 ): Grounding {
 	const nodes: Record<VisualId, GroundedNodeRegion> = {}
+	const relations: Record<VisualId, GroundedRelationRegion> = {}
 
 	// Guarded rather than divided: an empty canvas has no bounds, and `0 / 0` would
 	// put a NaN in every bbox. There is nothing to ground that would need a scale.
@@ -86,11 +95,25 @@ export function buildGrounding(
 		}
 	}
 
+	// Only when there are nodes to ground against — `scale` is 0 otherwise, and a
+	// row of zeroes would claim an arrow sits in the image's top-left corner.
+	if (scale > 0) {
+		for (const { visualId, geometry } of labelledRelations) {
+			const badge = relationImagePoint(geometry, projection, scale)
+
+			relations[visualId] = {
+				relationId: geometry.relationId,
+				bbox: round(relationImageAabb(geometry, projection, scale)),
+				badge: [Math.round(badge.x), Math.round(badge.y)],
+			}
+		}
+	}
+
 	// Copied, not held. The export measures the image from a decoded `ImageBitmap`,
 	// whose `width`/`height` are prototype getters — keeping that object would
 	// serialise `image` as `{}` and quietly lose the dimensions the bboxes are
 	// relative to.
-	return { image: { width: image.width, height: image.height }, nodes }
+	return { image: { width: image.width, height: image.height }, nodes, relations }
 }
 
 /**
@@ -114,53 +137,65 @@ export function predictedImageSize(projection: GroundingProjection): ImageSize {
  * pixel ratio is fixed, so the layer can be derived on every read the way
  * `buildSpatialContext` is.
  */
-export function deriveGrounding(nodes: CanvasNode[]): Grounding {
-	const projection = groundingProjection(nodes, GROUNDING_PADDING)
+export function deriveGrounding(
+	nodes: CanvasNode[],
+	relations: RelationGeometry[] = []
+): Grounding {
+	const projection = groundingProjection(nodes, GROUNDING_PADDING, relations)
 
-	return buildGrounding(assignVisualIds(nodes), projection, predictedImageSize(projection))
+	return buildGrounding(
+		assignVisualIds(nodes),
+		projection,
+		predictedImageSize(projection),
+		assignRelationVisualIds(relations)
+	)
 }
 
 /**
- * Two decimals, and a `g` in front of it.
+ * `R1 g 1.00` — which arrow this is, then how strongly the user asserted it.
  *
- * The prefix is load-bearing: an image already carries distances, sizes and node
+ * The `g` is load-bearing: an image already carries distances, sizes and node
  * labels, and a bare `0.35` beside an arrow could be read as any of them. Two
  * decimals because gravity is a 0–1 scale a person set by hand — `1.00` and `0.35`
  * are the resolutions that get used, and a fixed width keeps badges uniform.
+ *
+ * The `R1` is load-bearing for a different reason: two relations at the same
+ * gravity produced two identical badges, so a reader could see *that* there were
+ * two and never which was which. It is also the key into
+ * `grounding.relations`, which is what makes the mark joinable to the JSON.
  */
-export function formatGravity(gravity: number): string {
-	return `g ${gravity.toFixed(2)}`
+export function formatGravity(gravity: number, visualId?: VisualId): string {
+	const strength = `g ${gravity.toFixed(2)}`
+	return visualId === undefined ? strength : `${visualId} ${strength}`
 }
 
 /**
  * A badge per relation, for the exported PNG.
  *
- * Not part of `Grounding`, and that is deliberate: `grounding` indexes nodes, and
- * a relation is already fully stated in `relations` — by `NodeId`, which
- * `grounding.nodes` maps back to `N1`, `N2`… So a reader can already join the badge
- * it sees to the relation it names, and a parallel relation index in the JSON
- * would restate the same claim in a second coordinate system.
+ * Driven by the *labelled geometry* rather than by the relations record, because
+ * the geometry is what knows where the arrow actually runs — and an arrow the
+ * renderer couldn't measure gets no badge rather than one at a guessed position.
  *
- * A relation whose endpoints aren't both in `nodes` is skipped rather than placed
- * somewhere arbitrary. `getCanvasRelations` can't produce one, but an imported
- * document can, and a badge floating over nothing is worse than a missing badge.
+ * A geometry whose relation is no longer in the document is skipped for the same
+ * reason: `getCanvasRelations` and the geometry read come from the same page, but
+ * an imported document can disagree with itself, and a badge floating over nothing
+ * is worse than a missing badge.
  */
 export function relationAnnotations(
 	relations: Record<RelationId, Relation>,
-	nodes: Record<NodeId, CanvasNode>,
+	labelledRelations: GroundedRelation[],
 	projection: GroundingProjection,
 	scale: number
 ): RelationAnnotation[] {
 	const annotations: RelationAnnotation[] = []
 
-	for (const relation of Object.values(relations)) {
-		const from = nodes[relation.from]
-		const to = nodes[relation.to]
-		if (!from || !to) continue
+	for (const { visualId, geometry } of labelledRelations) {
+		const relation = relations[geometry.relationId]
+		if (!relation) continue
 
 		annotations.push({
-			label: formatGravity(relation.gravity),
-			at: relationImagePoint(from, to, projection, scale),
+			label: formatGravity(relation.gravity, visualId),
+			at: relationImagePoint(geometry, projection, scale),
 		})
 	}
 

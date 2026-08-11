@@ -1,7 +1,8 @@
 /**
  * Live view of the canonical Canvas, plus JSON export and import, plus the two
  * strength signals side by side: the gravity the user gave each relation, and the
- * spatial influence derived from the layout.
+ * spatial influence derived from the layout — and then, third, what the two make
+ * together.
  *
  * This is the fastest way to see the model actually working: every interaction
  * on the canvas shows up here as a canonical Node, and the JSON that leaves
@@ -15,6 +16,7 @@
 import { useState } from 'react'
 import { useEditor } from 'tldraw'
 import type { CanvasDocument, CanvasNode, SpatialInfluence } from '@/domain'
+import { DEFAULT_STRATEGY } from '@/domain'
 import { useCanvasDocument } from '@/canvas/adapter/canvasView'
 import { nodeToShape } from '@/canvas/adapter/adapter'
 import { restoringNodes } from '@/canvas/adapter/metadata'
@@ -129,6 +131,11 @@ export function InspectorPanel() {
 				display: 'flex',
 				flexDirection: 'column',
 				gap: 8,
+				// Three collapsible sections can outgrow `maxHeight`, and without this the
+				// overflow renders *outside* the panel's own background rather than
+				// scrolling inside it. `onWheel` above already keeps the scroll from
+				// reaching the canvas and zooming it.
+				overflowY: 'auto',
 				borderRadius: 8,
 				background: 'var(--tl-color-panel, #fff)',
 				boxShadow: '0 2px 12px rgba(0, 0, 0, 0.2)',
@@ -182,9 +189,14 @@ export function InspectorPanel() {
 			{/* Relations above influence, following the document's own key order: what
 			    the user said, then what the layout implies. Two tables rather than one
 			    joined table on purpose — a shared row would suggest the two numbers
-			    belong to the same scale. */}
+			    belong to the same scale.
+
+			    The combination comes third, after both of its inputs, so it reads as a
+			    conclusion drawn from the two tables above rather than as a replacement
+			    for either. */}
 			<RelationSection canvas={canvas} />
 			<InfluenceSection canvas={canvas} />
+			<EffectiveStrengthSection canvas={canvas} />
 		</div>
 	)
 }
@@ -330,6 +342,70 @@ function InfluenceRow({ row, nodes }: { row: SpatialInfluence; nodes: CanvasDocu
 			<td style={{ textAlign: 'right' }}>{row.distance}</td>
 			<td style={{ textAlign: 'right' }}>{row.influence.toFixed(3)}</td>
 		</tr>
+	)
+}
+
+/**
+ * The pairs the user connected, with both signals and their combination.
+ *
+ * Shows its working on every row — `influence`, `gravity`, then the result — for
+ * the reason the layer exists: a single ranking number that hid its inputs would
+ * be the conflation the model refuses, while one that prints them beside itself
+ * can be checked. The strategy name sits in the header rather than on each row,
+ * since one document is built with one strategy throughout.
+ */
+function EffectiveStrengthSection({ canvas }: { canvas: CanvasDocument }) {
+	const [isOpen, setIsOpen] = useState(true)
+
+	// Read from the document, like the two tables above it.
+	const rows = canvas.spatialContext.effectiveStrengths
+	const relations = Object.values(canvas.relations).length
+	const strategy = rows[0]?.strategy ?? DEFAULT_STRATEGY.name
+
+	return (
+		<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+			<button onClick={() => setIsOpen(!isOpen)} style={buttonStyle}>
+				{isOpen ? '▾' : '▸'} Effective strength · {rows.length} connected pair
+				{rows.length === 1 ? '' : 's'} · {strategy}
+			</button>
+
+			{isOpen && (
+				<div style={{ ...preStyle, minHeight: 0, maxHeight: 200 }}>
+					{rows.length === 0 ? (
+						<span style={{ opacity: 0.6 }}>
+							{relations === 0
+								? 'Nothing connected yet — proximity alone produces no combined row.'
+								: 'No relation connects two nodes on this canvas.'}
+						</span>
+					) : (
+						<table style={{ width: '100%', borderCollapse: 'collapse' }}>
+							<thead>
+								<tr style={{ opacity: 0.6, textAlign: 'left' }}>
+									<th>source → target</th>
+									<th style={{ textAlign: 'right' }}>infl</th>
+									<th style={{ textAlign: 'right' }}>grav</th>
+									<th style={{ textAlign: 'right' }}>effective</th>
+								</tr>
+							</thead>
+							<tbody>
+								{rows.map((row) => (
+									<tr key={`${row.source}→${row.target}`}>
+										<td>
+											{nodeLabel(canvas.nodes[row.source])} → {nodeLabel(canvas.nodes[row.target])}
+										</td>
+										{/* The two inputs dimmed, the result not: the row is about the
+										    combination, and the inputs are here to make it checkable. */}
+										<td style={{ textAlign: 'right', opacity: 0.6 }}>{row.influence.toFixed(3)}</td>
+										<td style={{ textAlign: 'right', opacity: 0.6 }}>{row.gravity.toFixed(2)}</td>
+										<td style={{ textAlign: 'right' }}>{row.effectiveStrength.toFixed(3)}</td>
+									</tr>
+								))}
+							</tbody>
+						</table>
+					)}
+				</div>
+			)}
+		</div>
 	)
 }
 

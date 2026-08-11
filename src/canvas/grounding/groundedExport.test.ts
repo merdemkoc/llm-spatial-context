@@ -37,7 +37,8 @@ import {
 import { GROUNDING_PADDING } from '@/canvas/grounding/annotationLayer'
 import { buildGrounding, groundedDocument, relationAnnotations } from '@/canvas/grounding/grounding'
 import { groundingProjection } from '@/canvas/grounding/projection'
-import { assignVisualIds } from '@/canvas/grounding/visualId'
+import { assignRelationVisualIds, assignVisualIds } from '@/canvas/grounding/visualId'
+import { getRelationGeometry } from '@/canvas/adapter/relationGeometry'
 
 const shapeUtils = [...defaultShapeUtils, PostItShapeUtil]
 
@@ -63,20 +64,30 @@ function createPostIt(id: string, x: number, y: number, text?: string) {
 	editor.createShape({ ...nodeToShape(node), parentId: editor.getCurrentPageId() })
 }
 
-/** The same sequence `buildGroundedScreenshot` runs, minus the rasterising. */
+/**
+ * The same sequence `buildGroundedScreenshot` runs, minus the rasterising —
+ * including the arrow geometry, without which the export box and every badge would
+ * be computed from the nodes alone. That was the bug this mirrors.
+ */
 function grounded() {
 	const canvas = getCanvasDocument(editor)
 	const nodes = Object.values(canvas.nodes)
 
 	const labelled = assignVisualIds(nodes)
-	const projection = groundingProjection(nodes, GROUNDING_PADDING)
+	const geometry = getRelationGeometry(editor, canvas.relations)
+	const projection = groundingProjection(nodes, GROUNDING_PADDING, geometry)
 
 	return groundedDocument(
 		canvas,
-		buildGrounding(labelled, projection, {
-			width: projection.width * EXPORT_SCALE,
-			height: projection.height * EXPORT_SCALE,
-		})
+		buildGrounding(
+			labelled,
+			projection,
+			{
+				width: projection.width * EXPORT_SCALE,
+				height: projection.height * EXPORT_SCALE,
+			},
+			assignRelationVisualIds(geometry)
+		)
 	)
 }
 
@@ -212,9 +223,15 @@ describe('relation badges over a real document', () => {
 	/** The badges the export would draw, from the same document it would draw them for. */
 	function badges() {
 		const canvas = grounded()
-		const projection = groundingProjection(Object.values(canvas.nodes), GROUNDING_PADDING)
+		const geometry = getRelationGeometry(editor, canvas.relations)
+		const projection = groundingProjection(Object.values(canvas.nodes), GROUNDING_PADDING, geometry)
 
-		return relationAnnotations(canvas.relations, canvas.nodes, projection, EXPORT_SCALE)
+		return relationAnnotations(
+			canvas.relations,
+			assignRelationVisualIds(geometry),
+			projection,
+			EXPORT_SCALE
+		)
 	}
 
 	it('labels the relation the document reports, at the strength it reports', () => {
@@ -222,13 +239,15 @@ describe('relation badges over a real document', () => {
 		createPostIt('b', 900, 400)
 		createRelationArrow('a', 'b', 0.35)
 
-		expect(badges()).toEqual([{ label: 'g 0.35', at: expect.anything() }])
+		expect(badges()).toEqual([{ label: 'R1 g 0.35', at: expect.anything() }])
 	})
 
 	/**
 	 * The sibling of "keeps every bbox inside the image": a badge outside the PNG is
-	 * a claim nobody can see. It holds by construction — a midpoint between two nodes
-	 * is inside the box that contains them — and this is what keeps it true.
+	 * a claim nobody can see. It used to hold by construction, because a midpoint
+	 * between two nodes is inside the box containing them. Now that the point is
+	 * measured off the drawn path — which can bow outside the nodes — it holds
+	 * because the projection unions the arrows' own bounds. This is what pins that.
 	 */
 	it('keeps every badge inside the image', () => {
 		createPostIt('a', 0, 0)
@@ -248,10 +267,63 @@ describe('relation badges over a real document', () => {
 		}
 	})
 
+	it('gives each badge its own label so two arrows are distinguishable', () => {
+		createPostIt('a', 0, 0)
+		createPostIt('b', 700, 300)
+		createRelationArrow('a', 'b')
+		createRelationArrow('b', 'a')
+
+		// Two relations at the default gravity used to produce two identical `g 1.00`
+		// badges with nothing to tell them apart.
+		const labels = badges().map((badge) => badge.label)
+
+		expect(new Set(labels).size).toBe(2)
+		expect(labels.every((label) => label.endsWith('g 1.00'))).toBe(true)
+	})
+
 	it('has nothing to label when the user drew no relations', () => {
 		createPostIt('a', 0, 0)
 		createPostIt('b', 900, 400)
 
 		expect(badges()).toEqual([])
+	})
+
+	/** The reported bug, as an assertion: an arrow must be inside the exported box. */
+	it('sizes the export to hold the arrow, not just the notes', () => {
+		createPostIt('a', 0, 0)
+		createPostIt('b', 900, 0)
+		createRelationArrow('a', 'b')
+
+		const canvas = grounded()
+		const geometry = getRelationGeometry(editor, canvas.relations)
+		const projection = groundingProjection(Object.values(canvas.nodes), GROUNDING_PADDING, geometry)
+
+		expect(geometry).toHaveLength(1)
+		for (const arrow of geometry) {
+			expect(arrow.bounds.minX).toBeGreaterThanOrEqual(projection.minX)
+			expect(arrow.bounds.minY).toBeGreaterThanOrEqual(projection.minY)
+			expect(arrow.bounds.maxX).toBeLessThanOrEqual(projection.minX + projection.width)
+			expect(arrow.bounds.maxY).toBeLessThanOrEqual(projection.minY + projection.height)
+		}
+	})
+
+	/** Every arrow gets an entry, so the picture is joinable to the JSON. */
+	it('indexes each relation in grounding.relations', () => {
+		createPostIt('a', 0, 0)
+		createPostIt('b', 900, 400)
+		createRelationArrow('a', 'b', 0.6)
+
+		const { grounding, relations } = grounded()
+		const [only] = Object.values(relations)
+
+		expect(Object.keys(grounding.relations)).toEqual(['R1'])
+		expect(grounding.relations.R1.relationId).toBe(only.id)
+
+		// And the region it names is inside the image it is relative to.
+		const [x1, y1, x2, y2] = grounding.relations.R1.bbox
+		expect(x1).toBeGreaterThanOrEqual(0)
+		expect(y1).toBeGreaterThanOrEqual(0)
+		expect(x2).toBeLessThanOrEqual(grounding.image.width)
+		expect(y2).toBeLessThanOrEqual(grounding.image.height)
 	})
 })

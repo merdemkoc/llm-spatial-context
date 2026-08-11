@@ -16,7 +16,7 @@ import {
 	relationAnnotations,
 } from '@/canvas/grounding/grounding'
 import { groundingProjection } from '@/canvas/grounding/projection'
-import { assignVisualIds } from '@/canvas/grounding/visualId'
+import { assignRelationVisualIds, assignVisualIds } from '@/canvas/grounding/visualId'
 
 const NOW = '2026-08-10T12:00:00.000Z'
 
@@ -134,7 +134,14 @@ describe('deriveGrounding', () => {
 	})
 
 	it('grounds nothing on an empty canvas rather than failing', () => {
-		expect(deriveGrounding([])).toEqual({ image: { width: 0, height: 0 }, nodes: {} })
+		// Both maps present and empty, not absent: a reader needs to see "nothing is
+		// grounded" rather than infer it from a missing key, the same rule
+		// `spatialContext` follows.
+		expect(deriveGrounding([])).toEqual({
+			image: { width: 0, height: 0 },
+			nodes: {},
+			relations: {},
+		})
 	})
 
 	/**
@@ -187,44 +194,80 @@ describe('relationAnnotations', () => {
 		return { r1: { id: 'r1', from: 'a', to: 'b', gravity: 1, ...overrides } }
 	}
 
-	it('labels a relation with its gravity, at the midpoint of its endpoints', () => {
-		const annotations = relationAnnotations(relation({ gravity: 0.35 }), nodes, projection, 2)
+	/** What the adapter measures off the drawn arrow. */
+	function measured(relationId = 'r1', midpoint = { x: 420, y: 80 }) {
+		return assignRelationVisualIds([
+			{
+				relationId,
+				bounds: { minX: 120, minY: 60, maxX: 720, maxY: 100 },
+				midpoint,
+			},
+		])
+	}
 
-		// Centres are (120, 80) and (720, 80); their midpoint is (420, 80), and the
-		// projection starts at (-40, -40), so at scale 2 that lands at (920, 240).
-		expect(annotations).toEqual([{ label: 'g 0.35', at: { x: 920, y: 240 } }])
+	it('labels a relation with its visual id and gravity, on the measured path point', () => {
+		const annotations = relationAnnotations(relation({ gravity: 0.35 }), measured(), projection, 2)
+
+		// The measured point is (420, 80) and the projection starts at (-40, -40), so
+		// at scale 2 that lands at (920, 240).
+		expect(annotations).toEqual([{ label: 'R1 g 0.35', at: { x: 920, y: 240 } }])
+	})
+
+	it('follows the measured point rather than the nodes’ midpoint', () => {
+		// A bowed arrow between the same two notes. The old behaviour pinned this to
+		// (420, 80) whatever the arrow did.
+		const bowed = relationAnnotations(relation(), measured('r1', { x: 420, y: 500 }), projection, 2)
+
+		expect(bowed[0].at).toEqual({ x: 920, y: 1080 })
 	})
 
 	/** The label says what the JSON says: the badge can't drift from the document. */
 	it('reads the gravity from the relation rather than recomputing anything', () => {
-		expect(relationAnnotations(relation({ gravity: 0 }), nodes, projection, 2)[0].label).toBe(
-			'g 0.00'
+		expect(relationAnnotations(relation({ gravity: 0 }), measured(), projection, 2)[0].label).toBe(
+			'R1 g 0.00'
 		)
 	})
 
 	it('is empty when nothing is related', () => {
-		expect(relationAnnotations({}, nodes, projection, 2)).toEqual([])
+		expect(relationAnnotations({}, [], projection, 2)).toEqual([])
 	})
 
 	/**
-	 * An imported document can name a node that isn't there. A badge floating over
-	 * nothing would be worse than a missing one — it would point confidently at the
-	 * empty canvas.
+	 * An imported document can disagree with itself. A badge floating over nothing
+	 * would be worse than a missing one — it would point confidently at empty canvas.
 	 */
-	it('skips a relation whose endpoints are not both present', () => {
-		expect(relationAnnotations(relation({ to: 'nobody' }), nodes, projection, 2)).toEqual([])
-		expect(relationAnnotations(relation({ from: 'nobody' }), nodes, projection, 2)).toEqual([])
+	it('skips a measured arrow whose relation is not in the document', () => {
+		expect(relationAnnotations({}, measured('ghost'), projection, 2)).toEqual([])
 	})
 
-	it('annotates every relation, including both directions of a pair', () => {
+	it('skips a relation the renderer could not measure', () => {
+		// No geometry means no badge, rather than a badge at a guessed position.
+		expect(relationAnnotations(relation(), [], projection, 2)).toEqual([])
+	})
+
+	it('annotates every relation, numbering them in reading order', () => {
 		const both: Record<string, Relation> = {
 			r1: { id: 'r1', from: 'a', to: 'b', gravity: 1 },
 			r2: { id: 'r2', from: 'b', to: 'a', gravity: 0.5 },
 		}
 
-		expect(relationAnnotations(both, nodes, projection, 2).map((a) => a.label)).toEqual([
-			'g 1.00',
-			'g 0.50',
+		// r2 bows above r1, so it is the one that reads first.
+		const labelled = assignRelationVisualIds([
+			{
+				relationId: 'r1',
+				bounds: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+				midpoint: { x: 420, y: 300 },
+			},
+			{
+				relationId: 'r2',
+				bounds: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+				midpoint: { x: 420, y: 20 },
+			},
+		])
+
+		expect(relationAnnotations(both, labelled, projection, 2).map((a) => a.label)).toEqual([
+			'R1 g 0.50',
+			'R2 g 1.00',
 		])
 	})
 })
@@ -234,8 +277,8 @@ describe('groundedDocument', () => {
 		id: 'canvas-1',
 		nodes: { a: node('a', 0, 0) },
 		relations: {},
-		spatialContext: { influences: [] },
-		grounding: { image: { width: 1, height: 1 }, nodes: {} },
+		spatialContext: { influences: [], effectiveStrengths: [] },
+		grounding: { image: { width: 1, height: 1 }, nodes: {}, relations: {} },
 		metadata: { createdAt: NOW, updatedAt: NOW },
 	}
 

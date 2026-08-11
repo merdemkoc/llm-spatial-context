@@ -11,11 +11,16 @@
  * whatever order `nodes` happened to be in, and `Record` iteration order is not
  * something the canonical document promises.
  */
-import { nodeCenter, type CanvasNode, type VisualId } from '@/domain'
+import { nodeCenter, type CanvasNode, type RelationGeometry, type VisualId } from '@/domain'
 
 export interface GroundedNode {
 	visualId: VisualId
 	node: CanvasNode
+}
+
+export interface GroundedRelation {
+	visualId: VisualId
+	geometry: RelationGeometry
 }
 
 /**
@@ -34,6 +39,29 @@ export function assignVisualIds(nodes: CanvasNode[]): GroundedNode[] {
 			(a, b) => a.center.y - b.center.y || a.center.x - b.center.x || compare(a.node.id, b.node.id)
 		)
 		.map(({ node }, index) => ({ visualId: `N${index + 1}`, node }))
+}
+
+/**
+ * `R1`, `R2`, … for the arrows, on the same terms as `N1` for the nodes.
+ *
+ * A separate sequence rather than a continuation of the node numbering, because
+ * the two answer different questions and a reader scanning for `N3` should not
+ * find an arrow. Ordered by the badge point, since that is the mark actually
+ * printed in the image — ordering by the arrow's bounding box would number two
+ * crossing arrows by an edge neither badge sits on.
+ *
+ * The label is what makes two arrows at the same gravity tellable apart: a picture
+ * with two badges both reading `g 1.00` and nothing else says which is which.
+ */
+export function assignRelationVisualIds(relations: RelationGeometry[]): GroundedRelation[] {
+	return [...relations]
+		.sort(
+			(a, b) =>
+				a.midpoint.y - b.midpoint.y ||
+				a.midpoint.x - b.midpoint.x ||
+				compare(a.relationId, b.relationId)
+		)
+		.map((geometry, index) => ({ visualId: `R${index + 1}`, geometry }))
 }
 
 /**
