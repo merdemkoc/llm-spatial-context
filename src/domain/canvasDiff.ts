@@ -373,24 +373,25 @@ function subject(change: CanvasChange): string {
 	return 'node' in change ? change.node : change.relation
 }
 
-/** ` ` cannot occur in a NodeId, so a pair key can't collide. */
+/**
+ * A directed pair key, matching `effectiveStrength.ts`.
+ *
+ * `\u0000` rather than a printable separator, and here it is load-bearing rather
+ * than merely tidy: `splitPair` reads the key apart again, so a NodeId containing
+ * the separator would not just collide — it would hand back two ids that are not
+ * the ones that went in. A `NodeId` is only required to be a string, and an
+ * imported document is typed by assertion, so a space is not safe to assume out
+ * of one. A NUL cannot survive the round trip that produces an id.
+ */
 function pairKey(source: NodeId, target: NodeId): string {
-	return `${source} ${target}`
+	return `${source}\u0000${target}`
 }
 
 function splitPair(key: string): [NodeId, NodeId] {
-	const separator = key.indexOf(' ')
+	const separator = key.indexOf('\u0000')
 	return [key.slice(0, separator), key.slice(separator + 1)]
 }
 
-/**
- * Indexes a derived array by directed pair.
- *
- * Tolerates a missing array: a document that arrived from an import is typed by
- * assertion only, and one written before `effectiveStrengths` existed has no such
- * key. Treating that as "no combined rows" is right — it is what the document
- * says — where trusting the type would throw on real saved JSON.
- */
 function byPair<T extends SpatialInfluence | EffectiveStrength>(
 	rows: T[] | undefined
 ): Map<string, T> {
