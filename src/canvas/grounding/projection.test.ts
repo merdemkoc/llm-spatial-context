@@ -8,13 +8,14 @@
  * sweeps into negative `x`.
  */
 import { describe, expect, it } from 'vitest'
-import { createPostItNode, nodeCenter, type PostItNode } from '@/domain'
+import { createPostItNode, nodeCenter, type Point, type PostItNode } from '@/domain'
 import {
 	groundingProjection,
 	imageScale,
 	nodeCorners,
 	nodeImageAabb,
 	nodeImageQuad,
+	relationImageAabb,
 	relationImagePoint,
 	toImagePoint,
 } from '@/canvas/grounding/projection'
@@ -119,45 +120,69 @@ describe('toImagePoint', () => {
 	})
 })
 
+/**
+ * These once asserted that a badge sits at the midpoint of the two nodes' centres,
+ * which was the bug: a curved arrow never passes through that point. The badge
+ * position is now measured from the drawn path by the adapter and passed in, so
+ * what this function owns is only the world → image conversion.
+ */
 describe('relationImagePoint', () => {
 	const projection = { minX: 0, minY: 0, width: 1000, height: 1000 }
 
-	it('is the midpoint of the two nodes’ centres, in image pixels', () => {
-		const from = node({ id: 'a', x: 0, y: 0, width: 200, height: 100 })
-		const to = node({ id: 'b', x: 400, y: 300, width: 200, height: 100 })
+	function geometry(midpoint: Point, bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 }) {
+		return { relationId: 'r1', bounds, midpoint }
+	}
 
-		// Centres are (100, 50) and (500, 350); their midpoint is (300, 200).
-		expect(relationImagePoint(from, to, projection, 2)).toEqual({ x: 600, y: 400 })
+	it('is the supplied point on the path, in image pixels', () => {
+		expect(relationImagePoint(geometry({ x: 300, y: 200 }), projection, 2)).toEqual({
+			x: 600,
+			y: 400,
+		})
 	})
 
-	/** Symmetric: which end the arrow starts at is a fact about the relation, not the badge. */
-	it('is the same point in either direction', () => {
-		const from = node({ id: 'a', x: 0, y: 0 })
-		const to = node({ id: 'b', x: 900, y: 400 })
+	it('does not care where the nodes are', () => {
+		// The whole point of the change: two arrows between the same pair of notes can
+		// bow in different directions, and each badge follows its own curve.
+		const up = relationImagePoint(geometry({ x: 300, y: 20 }), projection, 1)
+		const down = relationImagePoint(geometry({ x: 300, y: 580 }), projection, 1)
 
-		expect(relationImagePoint(from, to, projection, 2)).toEqual(
-			relationImagePoint(to, from, projection, 2)
-		)
-	})
-
-	/** Rotation moves a node's centre, so the midpoint has to follow it there. */
-	it('follows a rotated node’s real centre', () => {
-		const from = node({ id: 'a', x: 0, y: 0, width: 200, height: 100, rotation: Math.PI / 2 })
-		const to = node({ id: 'b', x: 0, y: 0, width: 200, height: 100, rotation: Math.PI / 2 })
-
-		expect(relationImagePoint(from, to, projection, 1)).toEqual(
-			toImagePoint(nodeCenter(from), projection, 1)
-		)
+		expect(up).not.toEqual(down)
 	})
 
 	it('places it where the projection and scale say, not in world units', () => {
-		const from = node({ id: 'a', x: 100, y: 100, width: 100, height: 100 })
-		const to = node({ id: 'b', x: 300, y: 100, width: 100, height: 100 })
-
-		// Midpoint of the centres is (250, 150); the projection's origin is at (100, 100).
 		expect(
-			relationImagePoint(from, to, { minX: 100, minY: 100, width: 400, height: 400 }, 3)
+			relationImagePoint(
+				geometry({ x: 250, y: 150 }),
+				{ minX: 100, minY: 100, width: 400, height: 400 },
+				3
+			)
 		).toEqual({ x: 450, y: 150 })
+	})
+})
+
+describe('relationImageAabb', () => {
+	const projection = { minX: 0, minY: 0, width: 1000, height: 1000 }
+
+	it('is the drawn path’s box, so a bowed arrow’s overhang is in it', () => {
+		const bowed = {
+			relationId: 'r1',
+			bounds: { minX: 100, minY: 80, maxX: 900, maxY: 600 },
+			midpoint: { x: 500, y: 600 },
+		}
+
+		expect(relationImageAabb(bowed, projection, 2)).toEqual([200, 160, 1800, 1200])
+	})
+
+	it('is relative to the projection’s origin', () => {
+		const arrow = {
+			relationId: 'r1',
+			bounds: { minX: 150, minY: 150, maxX: 250, maxY: 350 },
+			midpoint: { x: 200, y: 250 },
+		}
+
+		expect(relationImageAabb(arrow, { minX: 100, minY: 100, width: 400, height: 400 }, 1)).toEqual([
+			50, 50, 150, 250,
+		])
 	})
 })
 

@@ -1,6 +1,6 @@
 # llm-spatial-context
 
-An experiment in giving an LLM **grounded spatial context** about a [tldraw](https://tldraw.dev) infinite canvas. A canonical model describes _what exists_ on the canvas — nodes, their geometry, and what the user explicitly connected — across four deliberately-separated layers, so a reader (a person or a model) can reach the same entity **semantically** (its text), **spatially** (where it sits and what its field reaches), **relationally** (what the user connected, named, and how strongly), and **visually** (which pixels of a screenshot it occupies). Derived data is never stored, proximity never silently becomes a relation, and the two strength signals — spatial influence and relational gravity — are never mixed into one number.
+An experiment in giving an LLM **grounded spatial context** about a [tldraw](https://tldraw.dev) infinite canvas. A canonical model describes _what exists_ on the canvas — nodes, their geometry, and what the user explicitly connected — across four deliberately-separated layers, so a reader (a person or a model) can reach the same entity **semantically** (its text), **spatially** (where it sits and what its field reaches), **relationally** (what the user connected, named, and how strongly), and **visually** (which pixels of a screenshot it occupies). Derived data is never stored, and proximity never silently becomes a relation. The two strength signals — spatial influence and relational gravity — are combined into a single ranking number only in a third layer that carries both of its inputs and names the function it used, so they are never _conflated_.
 
 Built on tldraw, Vite, React 19 and TypeScript.
 
@@ -16,6 +16,8 @@ Built on tldraw, Vite, React 19 and TypeScript.
   - [Four layers of context](#four-layers-of-context)
   - [Relations](#relations)
   - [Relational gravity](#relational-gravity)
+  - [Effective strength](#effective-strength)
+  - [Change detection](#change-detection)
   - [Grounded screenshot](#grounded-screenshot)
 - [Layout](#layout)
 - [Where to add things](#where-to-add-things)
@@ -185,6 +187,8 @@ A `CanvasDocument` deliberately separates what it knows about a canvas into four
 
 The first three speak in **canvas coordinates**; `grounding` speaks in **screenshot pixels**. That is why it is its own layer rather than extra fields on `spatial`.
 
+A fifth array, `spatialContext.effectiveStrengths`, is deliberately _not_ a fifth layer. It introduces no new claim about the canvas — every row is a function of the two layers above it, carried alongside the inputs it used — so it is a **reading** of the layers rather than one of them. See [Effective strength](#effective-strength).
+
 ```json
 {
 	"nodes": {
@@ -194,7 +198,18 @@ The first three speak in **canvas coordinates**; `grounding` speaks in **screens
 		"relation-1": { "from": "node-a", "to": "node-b", "gravity": 1, "type": "causes" }
 	},
 	"spatialContext": {
-		"influences": [{ "source": "node-a", "target": "node-b", "distance": 326, "influence": 0.349 }]
+		"influences": [{ "source": "node-a", "target": "node-b", "distance": 326, "influence": 0.349 }],
+		"effectiveStrengths": [
+			{
+				"source": "node-a",
+				"target": "node-b",
+				"influence": 0.349,
+				"gravity": 1,
+				"effectiveStrength": 0.837,
+				"strategy": "intent_weighted",
+				"relations": ["relation-1"]
+			}
+		]
 	},
 	"grounding": {
 		"image": { "width": 1998, "height": 1140 },
@@ -258,7 +273,9 @@ N4 → N1
   relational gravity: 1.0     ← the user says they are strongly related
 ```
 
-That is not an inconsistency to reconcile — it is the information. **No `effectiveInfluence` is computed**, and nothing blends the two, because collapsing them would destroy the only thing this model is trying to preserve: the difference between what the user _stated_ and what can be _inferred_ from how they arranged things. The Inspector shows them as two tables for the same reason.
+That is not an inconsistency to reconcile — it is the information. The two layers that own these numbers never contaminate each other: **no influence row ever carries a `gravity`, and no relation record ever carries an `influence`.** Collapsing them _in place_ would destroy the only thing this model is trying to preserve — the difference between what the user _stated_ and what can be _inferred_ from how they arranged things — so the Inspector shows them as separate tables.
+
+A reader who wants one number to rank by gets it from a third layer, [`effectiveStrengths`](#effective-strength), which carries both inputs and names the function that combined them. The rule is **never conflated**, not never combined: nothing that was visible before the combined layer existed has been taken away by it.
 
 Gravity is **directional**, like the rest of the record: `from → to` at `1.0` says nothing about `to → from`, which exists only if the user drew that arrow too. Spatial influence stays symmetric in existence (every pair gets a row) and asymmetric in value (it depends on the source's radius).
 
@@ -271,6 +288,109 @@ The schema stays minimal on purpose. No relation vocabulary (`explains`, `suppor
 `spatialContext` is assembled in `getCanvasDocument`, the one place a document is built, which is why it needs no invalidation logic and no manual trigger — a move, a resize, a radius change, an addition or a deletion all produce a fresh document. It is **output, not input**: importing a document ignores whatever `spatialContext` it carried and derives a new one from the Nodes.
 
 Every directed pair is emitted, including out-of-range ones at `influence: 0`, so "these are too far apart" stays distinguishable from "this pair wasn't considered". That is `N² − N` entries. Distance is rounded to whole units and influence to three decimals in the document; `calculateSpatialInfluences` stays exact for anything doing further arithmetic.
+
+### Effective strength
+
+Two numbers per pair answers "what is close?" and "what did the user say?", but not "**what should I look at first?**". `spatialContext.effectiveStrengths` answers that third question — one row per directed pair the user connected, carrying both inputs, the combination, and the name of the function that produced it.
+
+![The Inspector's three strength tables: gravity, spatial influence, and the combined effective strength](docs/images/three-strength-tables.png)
+
+The figure is the whole argument in one screenshot. Proximity ranks `Pricing model → Colour of the logo` highest at `0.571`; the user never connected them. `Pricing model → Churn in Q3` sits at half that influence — but it is the pair they drew an arrow between, and effective strength puts it at `0.822`.
+
+```json
+"effectiveStrengths": [
+	{
+		"source": "aaaaaaaa-…",
+		"target": "bbbbbbbb-…",
+		"influence": 0.286,
+		"gravity": 1,
+		"effectiveStrength": 0.822,
+		"strategy": "intent_weighted",
+		"relations": ["relation-1"]
+	}
+]
+```
+
+```mermaid
+graph LR
+    subgraph derived["derived from geometry"]
+        infl["<b>influence</b><br/>0.286<br/><i>spatialContext.influences</i>"]
+    end
+    subgraph stated["stated by the user"]
+        grav["<b>gravity</b><br/>1.00<br/><i>relations</i>"]
+    end
+    infl -->|"x 0.25"| eff
+    grav -->|"x 0.75"| eff
+    eff["<b>effectiveStrength</b><br/>0.822<br/><i>strategy: intent_weighted</i>"]
+
+    classDef geo fill:#eef2fb,stroke:#55a,color:#224;
+    classDef said fill:#eef7ee,stroke:#5a5,color:#243;
+    classDef both fill:#fdf1f7,stroke:#c59,color:#623;
+    class infl geo;
+    class grav said;
+    class eff both;
+```
+
+**Multiplication is the one function that cannot work here**, and MVP 0 asks for it by name. `influence × gravity` with gravity normalised to `0`–`1` gives `0.35 × 1.0 = 0.35` — a full-strength relation leaves a distant pair exactly as weak as drawing nothing would have, which fails the requirement in the same paragraph that asks for it. So the amplification lives in the **function**, not in the data, and gravity keeps the `0`–`1` scale `clampGravity` argues for:
+
+| Strategy                    | Function                          | `0.286 / 1.0` | Why it exists                                                          |
+| --------------------------- | --------------------------------- | ------------- | ---------------------------------------------------------------------- |
+| `intent_weighted` (default) | `infl·(1−w) + grav·w`, `w = 0.75` | `0.822`       | Intent counts 3× proximity, and High+High still outranks Low+High      |
+| `product`                   | `infl × gravity`                  | `0.286`       | The literal formula — kept so its failure is a test, not an argument   |
+| `lift`                      | `infl + grav·(1 − infl)`          | `1.0`         | Amplifies, but saturates: every default-gravity pair reaches exactly 1 |
+
+Which is why the strategy **travels with every row**. `INTENT_WEIGHT = 0.75` is a calibration guess — nothing consumes these numbers yet, so there is nothing to tune it against — and a reader who disagrees can see which function they are disagreeing with instead of having to reverse-engineer it.
+
+Each row is also **reproducible from itself**: it is combined from the same rounded `influence` printed beside it, so `strategy(row.influence, row.gravity)` returns `row.effectiveStrength` exactly. A row combined from a hidden extra three decimals would not survive that check, and checking is the point.
+
+Only connected pairs get a row. A pair with no arrow has no intent to combine, and emitting one with `gravity: 0` would invent the claim — **absent is not zero here either**. A pair at `influence: 0` _does_ get a row, because "explicitly related despite distance" is the state the whole separation exists for. Two arrows the same way have their gravities **summed and clamped**: saying a thing twice cannot mean it less, which is what rules out averaging.
+
+### Change detection
+
+`diffCanvas(before, after)` is the only part of the model with any notion of _before_, and it acquires one the cheapest way available: by being handed two documents. **There is no listener, no log and no history** — a caller that wants change detection holds its own snapshots. That is what keeps `CanvasDocument` a pure function of the store, with nothing to invalidate.
+
+It **reads** the derived layers rather than recomputing them, so a diff can never report a number that disagrees with the JSON the caller is holding. Comparison is exact equality on values the document already rounded, which makes the epsilon self-evident: a change too small to appear in the document cannot appear in a diff of it.
+
+Eight change kinds come back — the seven the requirement implies, plus `relation_gravity_changed`, which it omits although the style panel already permits it:
+
+```text
+node_created · node_deleted · node_moved · contextual_field_changed
+relation_created · relation_deleted · relation_rebound · relation_gravity_changed
+```
+
+Dragging a connected note away produces exactly the reading the requirement asks for — influence collapses, gravity does not move, and the combined number barely dips:
+
+```json
+{
+	"changes": [
+		{
+			"kind": "node_moved",
+			"node": "bbbbbbbb-…",
+			"before": { "x": 680, "y": 400 },
+			"after": { "x": 1520, "y": 400 }
+		}
+	],
+	"pairs": [
+		{
+			"source": "aaaaaaaa-…",
+			"target": "bbbbbbbb-…",
+			"distance": { "before": 500, "after": 1340, "delta": 840 },
+			"influence": { "before": 0.286, "after": 0, "delta": -0.286 },
+			"effectiveStrength": { "before": 0.822, "after": 0.75, "delta": -0.072 }
+		}
+	]
+}
+```
+
+`gravity` is **absent from that pair**, because it did not change. The arrow is still there at full strength; only the layout moved.
+
+Three decisions are worth naming:
+
+**`node_moved` compares centres, not corners.** `spatial.rotation` is applied about the unrotated box's top-left, and a resize changes width or height — so a rotation and a resize each move the centre, and therefore every distance in the document, while `spatial.x`/`y` may not have changed at all. One kind covers all three honestly; comparing raw coordinates would miss two of them.
+
+**`relation_rebound` is an update, not a delete plus a create.** `RelationId` derives from the arrow's shape id, which survives dragging one end onto a different note — so the relation's identity persists through a rebind, and the diff can say so.
+
+**Actions and consequences are two lists, not a tree.** The requirement's examples read as `A moved closer to B → influence increased`, and for a single action that join is recoverable. What the diff must not do is _assert_ it: when two nodes both move, deciding which one caused a given pair's influence to rise is an inference, and inferring causality is exactly what the requirement rules out. So `changes` says what the user did, `pairs` says what the numbers did, and the arrow between them is left to a reader who can see whether it is warranted.
 
 ### Grounded screenshot
 
@@ -292,7 +412,18 @@ The other three layers speak in canvas coordinates — they say where a Node is 
 
 The same Node is then reachable three ways: **semantic** (`content.text`), **spatial** (`spatial`, plus the derived `spatialContext`), and **visual** (`grounding.nodes[].bbox`).
 
-`grounding` still indexes **Nodes only** — a badge is drawn for a relation, but no relation entry is added to the JSON. There would be nothing new in one: `relations` already names both endpoints by node id, and `grounding.nodes` maps `N1`, `N2`… back to those ids, so the arrow in the picture is already joinable to the relation that describes it.
+`grounding` indexes **relations as well as Nodes**, keyed `R1`, `R2`… on the same terms:
+
+```json
+"relations": {
+	"R1": { "relationId": "rel-a", "bbox": [344, 157, 1837, 1200], "badge": [887, 390] },
+	"R2": { "relationId": "rel-b", "bbox": [560, 422, 3152, 1708], "badge": [2108, 1566] }
+}
+```
+
+It was argued out at first, on the grounds that `relations` already names both endpoints by node id and `grounding.nodes` maps `N1`, `N2`… back to those ids — so the arrow in the picture was already joinable to the relation describing it. That is true of an arrow's **identity** and silent about its **pixels**, which is the one question this layer exists to answer. A model looking at two crossing curves cannot tell which is which from endpoint ids alone.
+
+Leaving it out also forced the badge to be re-derivable from node centres, and [that is what broke it](#why-the-badge-is-measured-rather-than-derived).
 
 **`spatial` and `grounding.bbox` are different coordinate systems, and the separation is the point.** `spatial` is the canvas — world units, an origin the camera can't move, unchanged by any export. `bbox` is one screenshot — pixels from that image's top-left, meaningless without the `image` it came with. A Node 900 world units down the canvas is 1880px down a 2×-scale PNG; conflating the two is the mistake this layer makes impossible.
 
@@ -300,7 +431,21 @@ The same Node is then reachable three ways: **semantic** (`content.text`), **spa
 
 The layer is an _index, not an interpretation_. Every mark on it names something the JSON already states about something the user made: a Node's region, or the gravity they gave an arrow. Nothing _derived_ is drawn — no influence rings, no distance markers, no lines between Nodes that have none — because those claims live in `spatialContext`, and putting them on the image would mix a reading of the canvas into what is meant to be a lookup table between pixels and ids. Only the badges are filled, so the canvas underneath survives intact.
 
-A relation's badge reads `g 0.60`: the `g` is load-bearing, since an image already carries distances and sizes and a bare `0.60` beside an arrow could be read as any of them. It is placed at the **midpoint of the two Nodes' centres** — derived from the Nodes rather than measured from the arrow shape, so a reader can re-derive the position from `nodes[].spatial` and check the badge against the JSON instead of trusting it.
+#### Why the badge is measured rather than derived
+
+A relation's badge reads `R1 g 0.60`. The `g` is load-bearing, since an image already carries distances and sizes and a bare `0.60` beside an arrow could be read as any of them. The `R1` is load-bearing for a second reason, and it took a real export to notice: two relations at the default gravity produced two badges both reading `g 1.00`, so a reader could see _that_ there were two and never which was which.
+
+The position used to be the **midpoint of the two Nodes' centres** — derived rather than measured, so a reader could recompute it from `nodes[].spatial` and check the badge instead of trusting it. That re-derivability was real, and it was bought at too high a price:
+
+![Four post-its with two curved relation arrows, each badged R1 and R2 on the curve itself, and both arrows fully inside the frame](docs/images/grounded-relations.png)
+
+Those arrows are _bent_. A bend leaves the straight line between the two centres, so the derived midpoint is a point the curve never passes through — in the export that exposed this, both badges floated in open canvas, one of them directly above an unrelated Node's `N3` label where it read as that Node's gravity. **A badge naming the wrong thing is worse than one whose position has to be stated.**
+
+So the arrow's real path is measured — `getArrowInfo` gives a point on the arc, and an elbow route is walked to half its arc length — and `grounding.relations[].badge` says where the badge ended up. The check a reader could do by recomputing, they now do by reading.
+
+The same measurement fixed a second defect in that export. The export box was sized to the Nodes, while every shape on the page was drawn into it, so an arrow bowing outside the notes was **cut off at the edge of the PNG** with the rest of it still drawn. `groundingProjection` now unions the arrows' own bounds: in the canvas above the lowest note ends at y 780 and the lower arrow reaches y 874, which is 188px of image that used not to exist.
+
+Reading arrow geometry means the grounding layer needs something the canonical model can't supply — a curve's position is not a function of its endpoints. That work lives in `src/canvas/adapter/relationGeometry.ts`, the layer that is allowed to see both sides, and it hands the pure layer plain world-space numbers. It also **never throws**: `getCanvasDocument` runs inside a reactive computed, and measuring an arrow resolves its label's fonts, which fails outright on an editor without `textOptions`. An arrow it can't measure is omitted, so the cost of that failure is one missing badge rather than the canvas.
 
 Six things about it are worth knowing:
 
@@ -370,6 +515,8 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 - **Prototype logic that needs the editor** → the `onMount(editor)` callback in `src/canvas/Canvas.tsx`.
 - **A new custom shape** → copy `src/canvas/shapes/PostItShapeUtil.tsx`, then register it in `customShapeUtils` in `src/canvas/config.tsx`.
 - **A new custom tool** → copy `src/canvas/shapes/PostItTool.ts`, register it in `customTools`, add it to `uiOverrides` for its label and shortcut, and add a `TldrawUiMenuItem` to the `Toolbar` override so it actually appears (all three in `src/canvas/config.tsx`).
+- **A different way of combining the two strength signals** → add a `CombineStrategy` to `STRATEGIES` in `src/domain/effectiveStrength.ts` and pass it to `buildSpatialContext`. Nothing else needs to know: the name travels with each row, so the JSON says which function produced it. Don't reach for a new `gravity` scale to get amplification — that is what the strategy is for.
+- **Change detection over time** → `diffCanvas(before, after)` in `src/domain/canvasDiff.ts`. Capture documents with `getCanvasDocument(editor)`; it reads the derived layers rather than recomputing them, so it can't disagree with the JSON you already have.
 
 ## Known limitations
 
@@ -382,19 +529,23 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 - **Arrow geometry doesn't survive a round trip.** `Relation` deliberately carries no anchor, bend or terminal detail, so an imported arrow re-binds centre-to-centre. The _relationship_ round-trips exactly; its draughtsmanship doesn't — the same trade as text formatting.
 - **Deleting a Node leaves a dangling arrow.** tldraw drops the binding and keeps the line, which then fails the "both ends bound" guard: the relation vanishes from the JSON while the line stays on the canvas. A delete cascade is the fix if it grates.
 - **Import replaces canonical content only.** Nodes and relation arrows are cleared and rebuilt; plain arrows and drawings are left alone, because the document never described them and so can neither restore nor honestly discard them.
-- **Relation arrows do appear in the grounded screenshot**, unlike the field overlay. They are canvas content the user drew, not a synthesised annotation — which is what the "no influence lines on the export" rule was about. `grounding` still indexes Nodes only.
-- **A gravity badge sits at the endpoint midpoint, not on the drawn curve.** A bent or elbow arrow leaves the straight line between the two centres, so its badge no longer sits on it. Following the curve would mean reading tldraw's arrow geometry, which the pure grounding layer deliberately can't see.
-- **Two badges can collide.** Reciprocal relations (`A → B` and `B → A`) share a midpoint and draw over each other, and a badge between two nearly-touching Nodes can cover a sliver of one of them — the only case where the annotation layer paints over canvas content. Nudging them apart needs a layout pass, which the MVP doesn't have.
+- **Relation arrows do appear in the grounded screenshot**, unlike the field overlay. They are canvas content the user drew, not a synthesised annotation — which is what the "no influence lines on the export" rule was about.
+- **A badge can still overlap something.** Placing it on the drawn path retired the two failure modes that mattered — a badge stranded in open canvas, and reciprocal arrows sharing one midpoint, since two curves between the same pair now have different midpoints — but a path crossing a Node still puts its badge over that Node, and two arrows crossing each other still put their badges close together. Nudging them apart needs a layout pass, which the MVP doesn't have. `grounding.relations[].badge` at least says exactly where each one went.
+- **An arrow the renderer can't measure gets no badge and no `grounding.relations` entry.** It is still in `relations` and still drawn in the picture; only the annotation is missing. That is the deliberate trade for never throwing inside the reactive computed that builds the document — see [Why the badge is measured](#why-the-badge-is-measured-rather-than-derived). In practice it is why a _labelled_ relation arrow gets no badge in the headless test suite, where no `textOptions` are configured; the app itself configures them.
+- **`grounding.relations` is keyed by position, not identity** — `R1` is where an arrow sits in reading order for one export, exactly as `N1` is for a Node. Redraw an arrow and the numbering can change; `relationId` inside the entry is the stable handle.
+- **`INTENT_WEIGHT = 0.75` is uncalibrated.** It satisfies "intent counts for significantly more than proximity" and nothing finer, because nothing consumes `effectiveStrength` yet — so there is no task to tune it against. It is one named constant in one file, and the strategy name travels with every row, precisely so the number can be revised without archaeology.
+- **`effectiveStrength` is not in the grounded screenshot.** The export deliberately draws nothing derived, and a combined value is derived twice over. A reader joins it from the JSON via `grounding.nodes`, the way they already do for influence.
+- **`diffCanvas` has no UI and no history.** It compares two documents a caller is holding; nothing in the app records snapshots, so there is no timeline to look at. That was the point — a log would be the second store the rest of the design avoids — but it does mean change detection is only reachable from code today.
 
 ## Testing
 
 `npm test` runs three layers, because the first one alone turned out not to be enough — two bugs shipped that were invisible to pure tests (a meta write the record validator rejected, and a control whose commit was destroyed by the selection change that triggered it).
 
-| Layer              | Files                                                                                                                                                  | Environment                |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
-| Pure               | `domain/{canvas,spatialInfluence}.test.ts`, `adapter/{adapter,relations}.test.ts`, `grounding/{visualId,projection,grounding,annotationLayer}.test.ts` | `node` — no DOM, no editor |
-| Real editor        | `adapter/{editor,relationEditor}.test.ts`, `grounding/groundedExport.test.ts`                                                                          | `jsdom`                    |
-| Rendered component | `ui/*.test.tsx`                                                                                                                                        | `jsdom`                    |
+| Layer              | Files                                                                                                                                                                               | Environment                |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff}.test.ts`, `adapter/{adapter,relations}.test.ts`, `grounding/{visualId,projection,grounding,annotationLayer}.test.ts` | `node` — no DOM, no editor |
+| Real editor        | `adapter/{editor,relationEditor}.test.ts`, `grounding/groundedExport.test.ts`                                                                                                       | `jsdom`                    |
+| Rendered component | `ui/*.test.tsx`                                                                                                                                                                     | `jsdom`                    |
 
 The default environment is `node`; the DOM suites opt in with a `@vitest-environment jsdom` docblock. That keeps the pure layer honest: `src/domain`, `src/canvas/adapter` and `postItShape.ts` import tldraw for _types only_, and adding a runtime tldraw import to any of them will break it.
 

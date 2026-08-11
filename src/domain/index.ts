@@ -29,7 +29,15 @@ export {
 	POST_IT_DEFAULT_WIDTH,
 } from '@/domain/node'
 
-export type { Grounding, GroundedNodeRegion, ImageSize, VisualId } from '@/domain/grounding'
+export type {
+	Grounding,
+	GroundedNodeRegion,
+	GroundedRelationRegion,
+	ImageSize,
+	RelationGeometry,
+	VisualId,
+	WorldBox,
+} from '@/domain/grounding'
 
 export type { Point, SpatialContext, SpatialInfluence } from '@/domain/spatialInfluence'
 
@@ -38,5 +46,29 @@ export {
 	calculateSpatialInfluence,
 	calculateSpatialInfluences,
 	distanceBetweenNodes,
+	DISTANCE_PRECISION,
+	INFLUENCE_PRECISION,
 	nodeCenter,
 } from '@/domain/spatialInfluence'
+
+export type { CombineStrategy, EffectiveStrength, StrategyName } from '@/domain/effectiveStrength'
+
+export {
+	buildEffectiveStrengths,
+	DEFAULT_STRATEGY,
+	INTENT_WEIGHT,
+	INTENT_WEIGHTED,
+	LIFT,
+	PRODUCT,
+	STRATEGIES,
+} from '@/domain/effectiveStrength'
+
+export type {
+	CanvasChange,
+	CanvasDiff,
+	Delta,
+	PairDelta,
+	RelationEndpoints,
+} from '@/domain/canvasDiff'
+
+export { diffCanvas } from '@/domain/canvasDiff'

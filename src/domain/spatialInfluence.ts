@@ -13,6 +13,13 @@
  * construction rather than by invalidation.
  */
 import type { CanvasNode, NodeId } from '@/domain/node'
+import type { Relation, RelationId } from '@/domain/canvas'
+import {
+	buildEffectiveStrengths,
+	DEFAULT_STRATEGY,
+	type CombineStrategy,
+	type EffectiveStrength,
+} from '@/domain/effectiveStrength'
 
 /**
  * One directed spatial relationship.
@@ -41,7 +48,23 @@ export interface SpatialInfluence {
  * kinds of signal apart instead of having them pre-mixed.
  */
 export interface SpatialContext {
+	/**
+	 * Every directed pair, from geometry alone. Nothing about a relation reaches
+	 * these rows — no `gravity` key appears on one — so this array says only what
+	 * the arrangement implies.
+	 */
 	influences: SpatialInfluence[]
+
+	/**
+	 * The pairs the user connected, with both signals and their combination.
+	 *
+	 * The third layer, and the only one derived from proximity *and* intent
+	 * together. It sits beside the two rather than replacing either: every row
+	 * carries the `influence` and `gravity` it was built from and names the
+	 * function that combined them, so the reading is auditable and neither input is
+	 * lost. See `effectiveStrength.ts`.
+	 */
+	effectiveStrengths: EffectiveStrength[]
 }
 
 export interface Point {
@@ -148,10 +171,16 @@ export function calculateSpatialInfluences(nodes: CanvasNode[]): SpatialInfluenc
 	return influences
 }
 
-/** World units. Sub-pixel precision says nothing a reader can act on. */
-const DISTANCE_PRECISION = 0
+/**
+ * World units. Sub-pixel precision says nothing a reader can act on.
+ *
+ * Exported because `canvasDiff` compares node centres at the same precision the
+ * document reports distances at — otherwise a diff could report a move too small
+ * to be visible in the JSON it describes.
+ */
+export const DISTANCE_PRECISION = 0
 /** Enough to see a falloff curve move; beyond this it's float noise. */
-const INFLUENCE_PRECISION = 3
+export const INFLUENCE_PRECISION = 3
 
 function round(value: number, decimals: number): number {
 	const factor = 10 ** decimals
@@ -165,13 +194,28 @@ function round(value: number, decimals: number): number {
  * stay that way for anything doing further arithmetic; this is the presentation
  * of them, and `0.6399999999999999` is noise in a document meant to be read.
  * Rounding happens once, here, so the JSON and the UI can't disagree.
+ *
+ * `relations` is forwarded to `buildEffectiveStrengths` and used for nothing
+ * else. `influences` above is still computed from geometry and geometry only, so
+ * "the proximity math never looks at an arrow" holds exactly where it mattered —
+ * an arrow cannot move an influence, it can only add a row to the third array.
+ * Defaulted to empty so every existing caller and test reads unchanged.
  */
-export function buildSpatialContext(nodes: CanvasNode[]): SpatialContext {
+export function buildSpatialContext(
+	nodes: CanvasNode[],
+	relations: Record<RelationId, Relation> = {},
+	strategy: CombineStrategy = DEFAULT_STRATEGY
+): SpatialContext {
+	const influences = calculateSpatialInfluences(nodes).map((entry) => ({
+		...entry,
+		distance: round(entry.distance, DISTANCE_PRECISION),
+		influence: round(entry.influence, INFLUENCE_PRECISION),
+	}))
+
 	return {
-		influences: calculateSpatialInfluences(nodes).map((entry) => ({
-			...entry,
-			distance: round(entry.distance, DISTANCE_PRECISION),
-			influence: round(entry.influence, INFLUENCE_PRECISION),
-		})),
+		influences,
+		// Built from the rounded rows above, not from the nodes, so a combined value
+		// is reproducible from the influence printed beside it.
+		effectiveStrengths: buildEffectiveStrengths(influences, relations, strategy),
 	}
 }

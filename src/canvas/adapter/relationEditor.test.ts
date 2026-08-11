@@ -412,8 +412,12 @@ describe('relations and spatialContext stay independent', () => {
 
 	/**
 	 * The case the whole separation exists for: far apart, and explicitly related
-	 * anyway. Both numbers are reported, neither is corrected by the other, and no
-	 * third number combining them is produced.
+	 * anyway. Both numbers are reported and neither is corrected by the other.
+	 *
+	 * A third number combining them *is* now produced, in `effectiveStrengths`, and
+	 * the invariant it has to respect is **never conflated** rather than never
+	 * combined: the two inputs stay separately readable in the layers that own them,
+	 * so nothing a reader could previously see has been taken away.
 	 */
 	it('reports a strong relation between two barely-influencing nodes', () => {
 		const node = (id: string, x: number) =>
@@ -436,8 +440,27 @@ describe('relations and spatialContext stay independent', () => {
 		expect(spatial?.influence).toBeGreaterThan(0)
 		expect(only()).toMatchObject({ from: 'b', to: 'a', gravity: 1 })
 
-		// No blended value anywhere: the reader gets both signals, unmixed.
-		expect(JSON.stringify(document)).not.toContain('effectiveInfluence')
+		// Never conflated. An influence row is geometry only — no arrow puts a gravity
+		// on one — and a relation record is intent only, so both layers still read
+		// exactly as they did before a combined layer existed.
+		expect(document.spatialContext.influences.every((row) => !('gravity' in row))).toBe(true)
+		expect(Object.values(document.relations).every((row) => !('influence' in row))).toBe(true)
+
+		// The combination lives in its own layer and shows its working: both inputs
+		// and the name of the function that combined them.
+		const combined = document.spatialContext.effectiveStrengths
+		expect(combined).toHaveLength(1)
+		expect(combined[0]).toMatchObject({
+			source: 'b',
+			target: 'a',
+			influence: spatial?.influence,
+			gravity: 1,
+			strategy: 'intent_weighted',
+		})
+
+		// And it is the point of the whole exercise: barely any proximity, but the
+		// user said so, and the combined number reflects that rather than the distance.
+		expect(combined[0].effectiveStrength).toBeGreaterThan(0.75)
 	})
 
 	/** Spatial influence is symmetric in existence; an explicit relation is not. */

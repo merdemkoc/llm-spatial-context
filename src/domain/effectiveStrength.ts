@@ -1,0 +1,268 @@
+/**
+ * Where the two strength signals meet — and the only place they are allowed to.
+ *
+ * `spatialInfluence.ts` answers "how close is this?" from geometry alone.
+ * `Relation.gravity` answers "how strongly did the user say this?" from the arrow
+ * alone. Neither can see the other, and that separation is the point of the
+ * model. This module is the third thing: a single ranking number for callers that
+ * need one, computed from both and **labelled with the function that produced
+ * it**.
+ *
+ * The distinction that matters is *conflated* versus *combined*. A combined value
+ * that sits beside its two intact inputs and names its own formula destroys
+ * nothing — a reader who wants the unmixed signals still has them, byte for byte,
+ * in `influences[]` and `relations[]`. A combined value that *replaced* them
+ * would, which is why nothing here writes back into either.
+ *
+ * Pure and derived, like everything in this directory. No tldraw.
+ */
+import { clampGravity } from '@/domain/canvas'
+import type { Relation, RelationId } from '@/domain/canvas'
+import type { NodeId } from '@/domain/node'
+import type { SpatialInfluence } from '@/domain/spatialInfluence'
+
+/**
+ * One directed pair the user connected, with both signals and their combination.
+ *
+ * `influence` and `gravity` are carried here as *copies*, not as the truth: the
+ * truth stays in `spatialContext.influences` and `relations`. They are repeated
+ * so that `effectiveStrength` can be audited in place — a reader can recompute it
+ * from the row's own two numbers and the named strategy, without joining three
+ * arrays to check whether the combination is honest.
+ */
+export interface EffectiveStrength {
+	source: NodeId
+	target: NodeId
+
+	/** The proximity signal, copied from the geometry. 0–1. */
+	influence: number
+
+	/**
+	 * The intent signal, copied from the relations on this directed pair. 0–1.
+	 *
+	 * When the user drew more than one arrow the same way, this is their clamped
+	 * sum — see `pairGravity`.
+	 */
+	gravity: number
+
+	/** The combination of the two, in the range 0–1. */
+	effectiveStrength: number
+
+	/** Which function produced `effectiveStrength`. */
+	strategy: StrategyName
+
+	/** The relations that contributed the gravity, so the row stays traceable. */
+	relations: RelationId[]
+}
+
+export type StrategyName = 'intent_weighted' | 'product' | 'lift'
+
+/**
+ * A candidate combination model.
+ *
+ * MVP 0 explicitly declines to settle on one: "do not hard-code the final
+ * multiplier model yet — the architecture should make it possible to experiment
+ * with different functions later." So the function is a value, several are
+ * shipped, and the name of the one used travels with every number it produces.
+ *
+ * Both arguments arrive already in 0–1 and the result is expected in 0–1, which
+ * is what keeps `effectiveStrength` comparable against the `influence` sitting
+ * beside it in the same row.
+ */
+export interface CombineStrategy {
+	name: StrategyName
+	combine(influence: number, gravity: number): number
+}
+
+/**
+ * How much more a stated relationship counts than a merely close one.
+ *
+ * `0.75` weights intent at three times proximity, which is the whole of MVP 0's
+ * requirement that "explicit user intent must have significantly more weight than
+ * proximity alone" — no finer claim than that is being made. It is a named
+ * constant in one file precisely because it is a calibration guess: nothing
+ * consumes these numbers yet, so there is nothing to tune it against.
+ */
+export const INTENT_WEIGHT = 0.75
+
+/**
+ * The default. A weighted blend, not a product.
+ *
+ * Multiplication is what MVP 0's prose reaches for, and with a 0–1 gravity it is
+ * the one function that cannot work: `0.35 × 1.0 = 0.35` leaves a stated
+ * relationship no stronger than the proximity it was supposed to amplify, which
+ * fails the requirement in the same paragraph that asks for it. See `PRODUCT`.
+ *
+ * A blend amplifies instead, and keeps the four states of MVP 0's own table
+ * ordered — a stated relationship between distant notes lands high (`0.838`), and
+ * one between close notes lands higher still (`0.975`), so "explicitly related
+ * despite distance" stays distinguishable from "spatial and intentional".
+ */
+export const INTENT_WEIGHTED: CombineStrategy = {
+	name: 'intent_weighted',
+	combine: (influence, gravity) => influence * (1 - INTENT_WEIGHT) + gravity * INTENT_WEIGHT,
+}
+
+/**
+ * MVP 0's literal formula, `influence × gravity`.
+ *
+ * Kept, and deliberately not the default. It is here so that its failure is
+ * something a test demonstrates rather than something a comment asserts: with
+ * gravity normalised to 0–1 this can only ever attenuate, so it makes an explicit
+ * relation *weaken* the pair it was drawn to strengthen. Useful as a baseline,
+ * and as the reason the default is what it is.
+ */
+export const PRODUCT: CombineStrategy = {
+	name: 'product',
+	combine: (influence, gravity) => influence * gravity,
+}
+
+/**
+ * Probabilistic OR — "either the layout or the user brought these together".
+ *
+ * Amplifies correctly, but saturates: at the default gravity of `1` every stated
+ * relationship reaches exactly `1` regardless of distance, collapsing two of MVP
+ * 0's four states into one number. That flattening is why it isn't the default,
+ * and it is worth keeping as the shape to compare a falloff against.
+ */
+export const LIFT: CombineStrategy = {
+	name: 'lift',
+	combine: (influence, gravity) => influence + gravity * (1 - influence),
+}
+
+export const STRATEGIES: Record<StrategyName, CombineStrategy> = {
+	intent_weighted: INTENT_WEIGHTED,
+	product: PRODUCT,
+	lift: LIFT,
+}
+
+export const DEFAULT_STRATEGY = INTENT_WEIGHTED
+
+/** Matches `INFLUENCE_PRECISION` in `spatialInfluence.ts`: the same kind of number. */
+const STRENGTH_PRECISION = 3
+
+function round(value: number): number {
+	const factor = 10 ** STRENGTH_PRECISION
+	return Math.round(value * factor) / factor
+}
+
+/**
+ * A directed pair key.
+ *
+ * `\u0000` rather than a printable separator: an id only has to be a string, and
+ * an imported document is typed by assertion, so a NodeId containing a space would
+ * make `a b` + `c` and `a` + `b c` the same key. A NUL cannot survive the round trip
+ * that produces an id, and writing it as an escape keeps this file text rather than
+ * something git treats as binary.
+ */
+function pairKey(source: NodeId, target: NodeId): string {
+	return `${source}\u0000${target}`
+}
+
+/**
+ * The gravity of a directed pair the user connected more than once.
+ *
+ * Summed, then clamped. Two arrows the same way is the user saying it twice, and
+ * saying a thing twice cannot mean it less — which rules out taking the minimum
+ * or averaging, since averaging a `1.0` with a `0.2` would let a hesitant second
+ * arrow *weaken* a confident first one. `clampGravity` holds the ceiling, so
+ * repetition reinforces up to the strongest claim the tool can express and no
+ * further.
+ *
+ * Order-independent, so the arbitrary order of `relations` cannot change a
+ * document's numbers.
+ */
+function pairGravity(gravities: number[]): number {
+	return clampGravity(gravities.reduce((total, gravity) => total + gravity, 0))
+}
+
+/**
+ * The combined layer of a Canvas: one row per directed pair the user connected.
+ *
+ * Takes the already-built `influences` rather than the nodes, which is what keeps
+ * this module free of geometry — it does no distance arithmetic of its own, so
+ * there is exactly one falloff formula in the codebase and it lives in
+ * `spatialInfluence.ts`.
+ *
+ * It also means the combination is computed from **the same rounded influence the
+ * document reports**, so every row is reproducible from the JSON a reader can
+ * see: take the row's own `influence` and `gravity`, apply the named `strategy`,
+ * get the row's `effectiveStrength`. A row combined from a hidden extra three
+ * decimals would not survive that check.
+ *
+ * Only connected pairs appear. Every pair has a spatial influence — `N² − N` of
+ * them — but a pair with no relation has no intent to combine, and emitting a row
+ * whose gravity was invented as `0` would be exactly the inference this model
+ * refuses to make. Absent is not zero here either.
+ *
+ * A pair at `influence: 0` **does** get a row. That is the state MVP 0 is most
+ * interested in — "explicitly related despite distance" — and dropping it for
+ * having no proximity would hide the disagreement that makes it informative.
+ *
+ * Directional, following `relations`: an arrow `A → B` says nothing about
+ * `B → A`, so only the direction the user drew gets a row.
+ *
+ * A relation whose endpoints have no influence row gets none here either, which
+ * silently and correctly drops the two cases that can produce one: an endpoint
+ * that isn't a node in this document, and a self-relation — `influences` omits
+ * self-pairs, so no separate guard is needed for either.
+ *
+ * Ordered by `effectiveStrength` descending, then by ids, so the strongest
+ * interactions read first and the output is stable enough to assert on.
+ */
+export function buildEffectiveStrengths(
+	influences: SpatialInfluence[],
+	relations: Record<RelationId, Relation>,
+	strategy: CombineStrategy = DEFAULT_STRATEGY
+): EffectiveStrength[] {
+	const influenceByPair = new Map<string, number>()
+	for (const row of influences) influenceByPair.set(pairKey(row.source, row.target), row.influence)
+
+	const byPair = new Map<string, { source: NodeId; target: NodeId; ids: RelationId[] }>()
+
+	for (const relation of Object.values(relations)) {
+		const key = pairKey(relation.from, relation.to)
+		if (!influenceByPair.has(key)) continue
+
+		const existing = byPair.get(key)
+		if (existing) existing.ids.push(relation.id)
+		else byPair.set(key, { source: relation.from, target: relation.to, ids: [relation.id] })
+	}
+
+	const rows: EffectiveStrength[] = []
+
+	for (const [key, { source, target, ids }] of byPair) {
+		const influence = influenceByPair.get(key) as number
+		const gravity = pairGravity(ids.map((id) => clampGravity(relations[id].gravity)))
+
+		rows.push({
+			source,
+			target,
+			influence,
+			gravity,
+			effectiveStrength: round(clamp01(strategy.combine(influence, gravity))),
+			strategy: strategy.name,
+			// Sorted so a pair's provenance doesn't depend on relation iteration order.
+			relations: [...ids].sort(),
+		})
+	}
+
+	return rows.sort(
+		(a, b) =>
+			b.effectiveStrength - a.effectiveStrength ||
+			a.source.localeCompare(b.source) ||
+			a.target.localeCompare(b.target)
+	)
+}
+
+/**
+ * Holds the 0–1 contract at the boundary rather than trusting each strategy to.
+ *
+ * `lift` can reach exactly `1` and a future experiment may overshoot; a value
+ * outside the range would make `effectiveStrength` incomparable to the
+ * `influence` beside it, which is the one property every strategy has to keep.
+ */
+function clamp01(value: number): number {
+	if (!Number.isFinite(value)) return 0
+	return Math.min(1, Math.max(0, value))
+}

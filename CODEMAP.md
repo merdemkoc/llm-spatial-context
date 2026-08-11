@@ -9,8 +9,10 @@ that way?", the linked README section answers it.
 
 The canonical model owns what things _are_. tldraw is the single runtime store and renders
 them. The **adapter** is the only code that touches both sides. Everything the model reports
-about a canvas — proximity influence, relations, screenshot grounding — is **derived on
-read** from the tldraw store, never a second copy of state that could drift.
+about a canvas — proximity influence, relations, effective strength, screenshot grounding — is
+**derived on read** from the tldraw store, never a second copy of state that could drift.
+`canvasDiff.ts` is the one module that needs a _previous_ state, and it gets one by being
+handed two documents rather than by keeping a log.
 
 So the mental model is one direction of trust:
 
@@ -69,11 +71,15 @@ flowchart LR
     gcd --> gcr["getCanvasRelations()<br/>per relation arrow"]
     gcd --> bsc["buildSpatialContext()<br/>derived proximity"]
     gcd --> dg["deriveGrounding()<br/>predicted bboxes"]
+    bsc --> bes["buildEffectiveStrengths()<br/>the two signals combined"]
+    gcr -.->|"gravity only"| bes
     stn --> doc[["CanvasDocument<br/>(canonical JSON)"]]
     gcr --> doc
     bsc --> doc
+    bes --> doc
     dg --> doc
     doc --> insp[InspectorPanel — live view]
+    doc --> diff["diffCanvas(before, after)<br/>caller-held snapshots"]
 ```
 
 **Write / import** — rebuilding the canvas from canonical JSON in a single undo step. The two
@@ -101,37 +107,45 @@ receiving them pre-mixed. See the README's
 | Node spatial state          | `nodes[].spatial`, `nodes[].contextualField` | `domain/node.ts`                                     |
 | Spatially derived context   | `spatialContext.influences`                  | `domain/spatialInfluence.ts`                         |
 | Explicit semantic relations | `relations` (incl. `gravity`)                | `canvas/adapter/relations.ts`, `domain/canvas.ts`    |
-| Visual grounding            | `grounding`                                  | `canvas/grounding/*`, types in `domain/grounding.ts` |
+| Visual grounding            | `grounding` (`nodes` + `relations`)          | `canvas/grounding/*`, types in `domain/grounding.ts` |
 
 The first three speak in **canvas coordinates**; `grounding` speaks in **screenshot pixels** —
 which is why it is its own layer rather than extra fields on `spatial`.
+
+`spatialContext.effectiveStrengths` (`domain/effectiveStrength.ts`) is **not** a fifth layer. It
+makes no new claim about the canvas — each row is a function of the two layers above it, carried
+beside the inputs it used and labelled with the function that produced it — so it is a _reading_ of
+the layers, not one of them.
 
 ## Directory & file reference
 
 ### `src/domain/` — the canonical model (pure, no tldraw)
 
-| File                  | Responsibility                                                                               | Key exports                                                                                                                                                           |
-| --------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `node.ts`             | The `CanvasNode` model — content, spatial state, optional contextual field, visual, metadata | `CanvasNode`, `PostItNode`, `SpatialProperties`, `ContextualField`, `VisualProperties`, `NodeMetadata`, `createPostItNode`, `POST_IT_DEFAULT_*`                       |
-| `canvas.ts`           | The root `CanvasDocument`, the explicit `Relation` record, and how a gravity is read         | `CanvasDocument`, `Relation`, `CanvasMetadata`, `CanvasId`, `RelationId`, `clampGravity`, `DEFAULT_RELATION_GRAVITY`                                                  |
-| `spatialInfluence.ts` | Derived proximity math — rotation-aware centre, distance, linear falloff, all directed pairs | `nodeCenter`, `distanceBetweenNodes`, `calculateSpatialInfluence`, `calculateSpatialInfluences`, `buildSpatialContext`, `SpatialContext`, `SpatialInfluence`, `Point` |
-| `grounding.ts`        | Types only for the grounding layer (screenshot-pixel regions)                                | `Grounding`, `GroundedNodeRegion`, `ImageSize`, `VisualId`                                                                                                            |
-| `index.ts`            | Barrel — the single `@/domain` import surface used by the adapter and UI                     | re-exports all of the above                                                                                                                                           |
+| File                   | Responsibility                                                                                  | Key exports                                                                                                                                                                                                        |
+| ---------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `node.ts`              | The `CanvasNode` model — content, spatial state, optional contextual field, visual, metadata    | `CanvasNode`, `PostItNode`, `SpatialProperties`, `ContextualField`, `VisualProperties`, `NodeMetadata`, `createPostItNode`, `POST_IT_DEFAULT_*`                                                                    |
+| `canvas.ts`            | The root `CanvasDocument`, the explicit `Relation` record, and how a gravity is read            | `CanvasDocument`, `Relation`, `CanvasMetadata`, `CanvasId`, `RelationId`, `clampGravity`, `DEFAULT_RELATION_GRAVITY`                                                                                               |
+| `spatialInfluence.ts`  | Derived proximity math — rotation-aware centre, distance, linear falloff, all directed pairs    | `nodeCenter`, `distanceBetweenNodes`, `calculateSpatialInfluence`, `calculateSpatialInfluences`, `buildSpatialContext`, `SpatialContext`, `SpatialInfluence`, `Point`, `DISTANCE_PRECISION`, `INFLUENCE_PRECISION` |
+| `effectiveStrength.ts` | The one place the two strength signals combine — swappable strategies, clamped-sum pair gravity | `buildEffectiveStrengths`, `EffectiveStrength`, `CombineStrategy`, `StrategyName`, `STRATEGIES`, `DEFAULT_STRATEGY`, `INTENT_WEIGHTED`, `PRODUCT`, `LIFT`, `INTENT_WEIGHT`                                         |
+| `canvasDiff.ts`        | The only module with a notion of _before_ — compares two documents; no listener, no log         | `diffCanvas`, `CanvasDiff`, `CanvasChange`, `PairDelta`, `Delta`, `RelationEndpoints`                                                                                                                              |
+| `grounding.ts`         | Types only for the grounding layer (screenshot-pixel regions)                                   | `Grounding`, `GroundedNodeRegion`, `ImageSize`, `VisualId`                                                                                                                                                         |
+| `index.ts`             | Barrel — the single `@/domain` import surface used by the adapter and UI                        | re-exports all of the above                                                                                                                                                                                        |
 
 ### `src/canvas/adapter/` — the only code that knows both sides
 
 `adapter.ts`, `ids.ts`, `richText.ts` use **type-only** tldraw imports so round-trip tests run
 without a DOM.
 
-| File                 | Responsibility                                                                                              | Key exports                                                                                                                                                                                                           |
-| -------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `adapter.ts`         | The projection: `shapeToNode` / `nodeToShape`, plus defensive `shape.meta` read/write helpers               | `shapeToNode`, `nodeToShape`, `readNodeMeta`, `writeNodeMeta`, `readNodeContextualField`, `writeNodeContextualField`, `contextualFieldPatch`, `PageTransform`                                                         |
-| `canvasView.ts`      | Assembles the whole `CanvasDocument` from the current page — the one place a document is built              | `getCanvasDocument`, `useCanvasDocument`                                                                                                                                                                              |
-| `relations.ts`       | Relation ⇄ arrow projection; reads bound arrows into `Relation`s, rebuilds them on import, owns gravity     | `getCanvasRelations`, `createRelations`, `isRelationArrow`, `relationType`, `relationGravity`, `setRelationGravity`, `selectedRelationArrowIds`, `RELATION_META_KEY`, `RELATION_GRAVITY_META_KEY`, `ARROW_SHAPE_TYPE` |
-| `contextualField.ts` | Editor-side writes for the contextual field (set/clear radius, with history mark)                           | `setContextualFieldRadius`, `selectedPostItIds`                                                                                                                                                                       |
-| `metadata.ts`        | Non-derivable node state via tldraw side-effects — `createdAt` / `updatedAt` / `createdBy`, `meta.relation` | `registerNodeMetadata`, `restoringNodes`                                                                                                                                                                              |
-| `ids.ts`             | Identity mapping: `NodeId` ⇄ `TLShapeId` (and the relation equivalents), tldraw-runtime-free                | `nodeIdToShapeId`, `shapeIdToNodeId`, `relationIdToShapeId`, `shapeIdToRelationId`, `createNodeId`                                                                                                                    |
-| `richText.ts`        | Pure plain-text ⇄ rich-text conversion (formatting is intentionally lossy on rebuild)                       | `plainTextToRichText`, `richTextToPlainText`                                                                                                                                                                          |
+| File                  | Responsibility                                                                                              | Key exports                                                                                                                                                                                                           |
+| --------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `adapter.ts`          | The projection: `shapeToNode` / `nodeToShape`, plus defensive `shape.meta` read/write helpers               | `shapeToNode`, `nodeToShape`, `readNodeMeta`, `writeNodeMeta`, `readNodeContextualField`, `writeNodeContextualField`, `contextualFieldPatch`, `PageTransform`                                                         |
+| `canvasView.ts`       | Assembles the whole `CanvasDocument` from the current page — the one place a document is built              | `getCanvasDocument`, `useCanvasDocument`                                                                                                                                                                              |
+| `relations.ts`        | Relation ⇄ arrow projection; reads bound arrows into `Relation`s, rebuilds them on import, owns gravity     | `getCanvasRelations`, `createRelations`, `isRelationArrow`, `relationType`, `relationGravity`, `setRelationGravity`, `selectedRelationArrowIds`, `RELATION_META_KEY`, `RELATION_GRAVITY_META_KEY`, `ARROW_SHAPE_TYPE` |
+| `relationGeometry.ts` | Measures each relation arrow's drawn path — world-space bounds + a point **on** the curve. Never throws     | `getRelationGeometry`                                                                                                                                                                                                 |
+| `contextualField.ts`  | Editor-side writes for the contextual field (set/clear radius, with history mark)                           | `setContextualFieldRadius`, `selectedPostItIds`                                                                                                                                                                       |
+| `metadata.ts`         | Non-derivable node state via tldraw side-effects — `createdAt` / `updatedAt` / `createdBy`, `meta.relation` | `registerNodeMetadata`, `restoringNodes`                                                                                                                                                                              |
+| `ids.ts`              | Identity mapping: `NodeId` ⇄ `TLShapeId` (and the relation equivalents), tldraw-runtime-free                | `nodeIdToShapeId`, `shapeIdToNodeId`, `relationIdToShapeId`, `shapeIdToRelationId`, `createNodeId`                                                                                                                    |
+| `richText.ts`         | Pure plain-text ⇄ rich-text conversion (formatting is intentionally lossy on rebuild)                       | `plainTextToRichText`, `richTextToPlainText`                                                                                                                                                                          |
 
 ### `src/canvas/shapes/` — the tldraw projection of a post-it
 
@@ -148,13 +162,13 @@ without a DOM.
 Every decision that could put a box in the wrong place lives in a pure function; only
 `groundedExport.ts` touches the browser.
 
-| File                 | Responsibility                                                                                                    | Key exports                                                                                                                                           |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `projection.ts`      | World ⇄ image-pixel geometry — rotated corners, export bounds, measured scale, bbox                               | `nodeCorners`, `groundingProjection`, `imageScale`, `toImagePoint`, `nodeImageQuad`, `nodeImageAabb`, `relationImagePoint`, `GroundingProjection`     |
-| `grounding.ts`       | Builds the `Grounding` layer (predicted on read; measured on export) + the PNG's relation badges                  | `deriveGrounding`, `buildGrounding`, `predictedImageSize`, `groundedDocument`, `relationAnnotations`, `formatGravity`, `EXPORT_PIXELS_PER_WORLD_UNIT` |
-| `visualId.ts`        | `N1/N2/N3…` in reading order — a label is a position, not an identity                                             | `assignVisualIds`, `GroundedNode`                                                                                                                     |
-| `annotationLayer.ts` | Draws outlines, label badges and gravity badges onto a 2D context (typed structurally so a recorder can stand in) | `drawGroundingLayer`, `GroundingContext`, `Annotation`, `RelationAnnotation`, `GROUNDING_PADDING`, `BOX_STROKE_WIDTH`, `LABEL_FONT_SIZE`              |
-| `groundedExport.ts`  | The browser export path — render via `editor.toImage`, composite annotations, save PNG + JSON                     | `buildGroundedScreenshot`, `exportGroundedScreenshot`, `GroundedScreenshot`                                                                           |
+| File                 | Responsibility                                                                                                    | Key exports                                                                                                                                                            |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `projection.ts`      | World ⇄ image-pixel geometry — rotated corners, export bounds (nodes **and** arrows), measured scale, bbox        | `nodeCorners`, `groundingProjection`, `imageScale`, `toImagePoint`, `nodeImageQuad`, `nodeImageAabb`, `relationImagePoint`, `relationImageAabb`, `GroundingProjection` |
+| `grounding.ts`       | Builds the `Grounding` layer — nodes and relations, predicted on read, measured on export — + the PNG's badges    | `deriveGrounding`, `buildGrounding`, `predictedImageSize`, `groundedDocument`, `relationAnnotations`, `formatGravity`, `EXPORT_PIXELS_PER_WORLD_UNIT`                  |
+| `visualId.ts`        | `N1/N2/N3…` for nodes and `R1/R2…` for arrows, in reading order — a label is a position, not an identity          | `assignVisualIds`, `assignRelationVisualIds`, `GroundedNode`, `GroundedRelation`                                                                                       |
+| `annotationLayer.ts` | Draws outlines, label badges and gravity badges onto a 2D context (typed structurally so a recorder can stand in) | `drawGroundingLayer`, `GroundingContext`, `Annotation`, `RelationAnnotation`, `GROUNDING_PADDING`, `BOX_STROKE_WIDTH`, `LABEL_FONT_SIZE`                               |
+| `groundedExport.ts`  | The browser export path — render via `editor.toImage`, composite annotations, save PNG + JSON                     | `buildGroundedScreenshot`, `exportGroundedScreenshot`, `GroundedScreenshot`                                                                                            |
 
 ### `src/` and `src/canvas/` — app shell & wiring
 
@@ -168,16 +182,16 @@ Every decision that could put a box in the wrong place lives in a pure function;
 
 ### `src/canvas/ui/` — React panels & overlays
 
-| File                           | Responsibility                                                                                | Key exports              |
-| ------------------------------ | --------------------------------------------------------------------------------------------- | ------------------------ |
-| `InspectorPanel.tsx`           | Live canonical JSON, Copy/Import, grounded-screenshot export, the relation + influence tables | `InspectorPanel`         |
-| `PostItStylePanel.tsx`         | Custom StylePanel — hosts the contextual-field and gravity controls + colour swatch rows      | `PostItStylePanel`       |
-| `ContextualFieldControl.tsx`   | Radius input for the selection (draft held, committed on blur/Enter/unmount)                  | `ContextualFieldControl` |
-| `RelationGravityControl.tsx`   | Gravity input for the selected relation arrows (same draft/commit mechanics, no clear)        | `RelationGravityControl` |
-| `ContextualFieldOverlay.tsx`   | `OnTheCanvas` overlay drawing each node's field as a circle, behind shapes                    | `ContextualFieldOverlay` |
-| `InfluenceBadges.tsx`          | Per-node `→` / `←` / distance badges for the single selected node                             | `InfluenceBadges`        |
-| `ContextualFieldToggle.tsx`    | Show/hide switch for the field overlay                                                        | `ContextualFieldToggle`  |
-| `contextualFieldVisibility.ts` | Module-scope tldraw `atom` shared by the toggle and overlay (not persisted, not canonical)    | `showContextualFields`   |
+| File                           | Responsibility                                                                              | Key exports              |
+| ------------------------------ | ------------------------------------------------------------------------------------------- | ------------------------ |
+| `InspectorPanel.tsx`           | Live canonical JSON, Copy/Import, grounded-screenshot export, and the three strength tables | `InspectorPanel`         |
+| `PostItStylePanel.tsx`         | Custom StylePanel — hosts the contextual-field and gravity controls + colour swatch rows    | `PostItStylePanel`       |
+| `ContextualFieldControl.tsx`   | Radius input for the selection (draft held, committed on blur/Enter/unmount)                | `ContextualFieldControl` |
+| `RelationGravityControl.tsx`   | Gravity input for the selected relation arrows (same draft/commit mechanics, no clear)      | `RelationGravityControl` |
+| `ContextualFieldOverlay.tsx`   | `OnTheCanvas` overlay drawing each node's field as a circle, behind shapes                  | `ContextualFieldOverlay` |
+| `InfluenceBadges.tsx`          | Per-node `→` / `←` / distance badges for the single selected node                           | `InfluenceBadges`        |
+| `ContextualFieldToggle.tsx`    | Show/hide switch for the field overlay                                                      | `ContextualFieldToggle`  |
+| `contextualFieldVisibility.ts` | Module-scope tldraw `atom` shared by the toggle and overlay (not persisted, not canonical)  | `showContextualFields`   |
 
 ### Config & tooling (root)
 
@@ -195,11 +209,11 @@ Every decision that could put a box in the wrong place lives in a pure function;
 Three layers, because the pure layer alone shipped two bugs it couldn't see. See the README's
 [Testing](./README.md#testing) section.
 
-| Layer              | Files                                                                                                                                                                   | Env     |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| Pure               | `domain/{canvas,spatialInfluence}.test.ts`, `adapter/adapter.test.ts`, `adapter/relations.test.ts`, `grounding/{projection,grounding,visualId,annotationLayer}.test.ts` | `node`  |
-| Real editor        | `adapter/editor.test.ts`, `adapter/relationEditor.test.ts`, `grounding/groundedExport.test.ts`                                                                          | `jsdom` |
-| Rendered component | `ui/ContextualFieldControl.test.tsx`, `ui/RelationGravityControl.test.tsx`, `ui/ContextualFieldOverlay.test.tsx`, `ui/InfluenceBadges.test.tsx`                         | `jsdom` |
+| Layer              | Files                                                                                                                                                                                                           | Env     |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff}.test.ts`, `adapter/adapter.test.ts`, `adapter/relations.test.ts`, `grounding/{projection,grounding,visualId,annotationLayer,arrowAware}.test.ts` | `node`  |
+| Real editor        | `adapter/editor.test.ts`, `adapter/relationEditor.test.ts`, `grounding/groundedExport.test.ts`                                                                                                                  | `jsdom` |
+| Rendered component | `ui/ContextualFieldControl.test.tsx`, `ui/RelationGravityControl.test.tsx`, `ui/ContextualFieldOverlay.test.tsx`, `ui/InfluenceBadges.test.tsx`                                                                 | `jsdom` |
 
 ## Where to start reading
 
@@ -221,8 +235,12 @@ Three layers, because the pure layer alone shipped two bugs it couldn't see. See
 - **Proximity never becomes a relation.** `spatialContext` is what the layout implies;
   `relations` is only what the user drew and named.
 - **A relation never becomes influence.** Its `gravity` is read from the arrow's meta alone, so
-  distance can't move it and it can't move `spatialContext`. The two strength signals are reported
-  side by side and never combined — there is no `effectiveInfluence`.
+  distance can't move it and it can't move an `influences` row.
+- **The two strength signals are never _conflated_** — which is weaker than never combined, and
+  deliberately so. No `influences` row carries a `gravity` and no `relations` record carries an
+  `influence`, so both layers read exactly as they did before a combined layer existed. The
+  combination lives only in `spatialContext.effectiveStrengths`, where every row carries the two
+  inputs it used and names the strategy that produced it, making it reproducible from the JSON.
 - **One Canvas is one tldraw page.** The page menu is hidden to keep that true.
 
 ## See also
