@@ -344,7 +344,8 @@ flowchart TB
     content --> rep[["Representation<br/>canonical JSON + grounded PNG"]]
     space --> rep
     relations --> rep
-    rep --> ai{{"AI"}}
+    rep --> stream[["Event stream<br/>what changed, as it changes"]]
+    stream --> ai{{"AI"}}
     ai -.-> observes["observes"]
     ai -.-> reasons["reasons"]
     ai -.-> acts["acts"]
@@ -352,22 +353,30 @@ flowchart TB
 
     classDef built fill:#eef7ee,stroke:#5a5,color:#243;
     classDef speculative fill:#f7f7f7,stroke:#aaa,color:#666;
-    class canvas,content,space,relations,rep built;
+    class canvas,content,space,relations,rep,stream built;
     class ai,observes,reasons,acts speculative;
 ```
 
-The green half of that diagram exists today. **Everything from the AI onward does not** — the rest
-of this section is where the prototype is pointed, not what it does.
+The green half of that diagram exists today — the representation, and now the event stream that
+reports its changes. **Everything from the AI onward does not** — the rest of this section is where
+the prototype is pointed, not what it does.
 
 An AI in that position would no longer be simply responding to explicit prompts. It could
-continuously observe how the representation changes as the user works:
+continuously observe how the representation changes as the user works — and two of those three
+observations are already emitted as structured events:
 
-- A user moves a node → spatial influence changes.
-- A user connects two nodes → relational gravity changes.
-- A user adds content → semantic structure changes.
+- A user moves a node → spatial influence changes — `field_entered`, `field_exited`,
+  `influence_changed`, `proximity_changed`.
+- A user connects two nodes → relational gravity changes — `relation_created`,
+  `relation_gravity_changed`, `relation_deleted`.
+- A user adds content → semantic structure changes — **not represented.** The event vocabulary is
+  deliberately spatial, and editing a note's text changes nothing the stream can see. Semantic
+  structure is the part of this picture the model still refuses to claim, so there is no event for
+  it to claim with.
 
-Observing those changes as a stream is what would let it act as a **context-aware thinking
-companion** rather than a chatbot. It could notice:
+The stream those events arrive on exists and is subscribable — that was the whole of MVP 1. What
+does not exist is anything subscribing to it. An observer in that position could act as a
+**context-aware thinking companion** rather than a chatbot. It could notice:
 
 - two semantically related ideas that have become spatially separated,
 - a cluster forming around a concept,

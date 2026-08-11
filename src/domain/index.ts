@@ -72,3 +72,11 @@ export type {
 } from '@/domain/canvasDiff'
 
 export { diffCanvas } from '@/domain/canvasDiff'
+
+export type { PairSnapshot, SpatialEvent } from '@/domain/events'
+
+export { deriveEvents, STRONG_PROXIMITY, WEAK_PROXIMITY } from '@/domain/events'
+
+export type { EventListener, SpatialEventStream } from '@/domain/eventStream'
+
+export { createEventStream, DEFAULT_BUFFER_SIZE, spatialEventStream } from '@/domain/eventStream'

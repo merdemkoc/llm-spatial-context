@@ -12,7 +12,10 @@ them. The **adapter** is the only code that touches both sides. Everything the m
 about a canvas — proximity influence, relations, effective strength, screenshot grounding — is
 **derived on read** from the tldraw store, never a second copy of state that could drift.
 `canvasDiff.ts` is the one module that needs a _previous_ state, and it gets one by being
-handed two documents rather than by keeping a log.
+handed two documents rather than by keeping a log. Exactly one place in the app holds those
+two documents — `adapter/spatialEvents.ts`, which diffs them on every store change and feeds
+the event stream. So there is still no second copy of canvas state: only a copy of the
+_previous_ view of it, one diff deep.
 
 So the mental model is one direction of trust:
 
@@ -80,6 +83,11 @@ flowchart LR
     dg --> doc
     doc --> insp[InspectorPanel — live view]
     doc --> diff["diffCanvas(before, after)<br/>caller-held snapshots"]
+    store -->|"store.listen · document scope"| rse["registerSpatialEvents<br/>holds previous doc"]
+    rse --> diff
+    diff --> de["deriveEvents()<br/>classify changes"]
+    de --> es[["spatialEventStream"]]
+    es --> elp["EventLogPanel · window.spatialEvents"]
 ```
 
 **Write / import** — rebuilding the canvas from canonical JSON in a single undo step. The two
@@ -117,19 +125,27 @@ makes no new claim about the canvas — each row is a function of the two layers
 beside the inputs it used and labelled with the function that produced it — so it is a _reading_ of
 the layers, not one of them.
 
+Spatial **events** (`domain/events.ts`) are not a layer either, for a stronger reason: they aren't in
+the document at all. A `CanvasDocument` describes the canvas at one instant; an event describes a
+_transition between two instants_, so it lives in the stream and never in the JSON. Every event is a
+restatement of something already visible in a diff of two documents — which is what keeps the
+document the single source of truth and the stream a view of its changes.
+
 ## Directory & file reference
 
 ### `src/domain/` — the canonical model (pure, no tldraw)
 
-| File                   | Responsibility                                                                                  | Key exports                                                                                                                                                                                                        |
-| ---------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `node.ts`              | The `CanvasNode` model — content, spatial state, optional contextual field, visual, metadata    | `CanvasNode`, `PostItNode`, `SpatialProperties`, `ContextualField`, `VisualProperties`, `NodeMetadata`, `createPostItNode`, `POST_IT_DEFAULT_*`                                                                    |
-| `canvas.ts`            | The root `CanvasDocument`, the explicit `Relation` record, and how a gravity is read            | `CanvasDocument`, `Relation`, `CanvasMetadata`, `CanvasId`, `RelationId`, `clampGravity`, `DEFAULT_RELATION_GRAVITY`                                                                                               |
-| `spatialInfluence.ts`  | Derived proximity math — rotation-aware centre, distance, linear falloff, all directed pairs    | `nodeCenter`, `distanceBetweenNodes`, `calculateSpatialInfluence`, `calculateSpatialInfluences`, `buildSpatialContext`, `SpatialContext`, `SpatialInfluence`, `Point`, `DISTANCE_PRECISION`, `INFLUENCE_PRECISION` |
-| `effectiveStrength.ts` | The one place the two strength signals combine — swappable strategies, clamped-sum pair gravity | `buildEffectiveStrengths`, `EffectiveStrength`, `CombineStrategy`, `StrategyName`, `STRATEGIES`, `DEFAULT_STRATEGY`, `INTENT_WEIGHTED`, `PRODUCT`, `LIFT`, `INTENT_WEIGHT`                                         |
-| `canvasDiff.ts`        | The only module with a notion of _before_ — compares two documents; no listener, no log         | `diffCanvas`, `CanvasDiff`, `CanvasChange`, `PairDelta`, `Delta`, `RelationEndpoints`                                                                                                                              |
-| `grounding.ts`         | Types only for the grounding layer (screenshot-pixel regions)                                   | `Grounding`, `GroundedNodeRegion`, `ImageSize`, `VisualId`                                                                                                                                                         |
-| `index.ts`             | Barrel — the single `@/domain` import surface used by the adapter and UI                        | re-exports all of the above                                                                                                                                                                                        |
+| File                   | Responsibility                                                                                          | Key exports                                                                                                                                                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `node.ts`              | The `CanvasNode` model — content, spatial state, optional contextual field, visual, metadata            | `CanvasNode`, `PostItNode`, `SpatialProperties`, `ContextualField`, `VisualProperties`, `NodeMetadata`, `createPostItNode`, `POST_IT_DEFAULT_*`                                                                    |
+| `canvas.ts`            | The root `CanvasDocument`, the explicit `Relation` record, and how a gravity is read                    | `CanvasDocument`, `Relation`, `CanvasMetadata`, `CanvasId`, `RelationId`, `clampGravity`, `DEFAULT_RELATION_GRAVITY`                                                                                               |
+| `spatialInfluence.ts`  | Derived proximity math — rotation-aware centre, distance, linear falloff, all directed pairs            | `nodeCenter`, `distanceBetweenNodes`, `calculateSpatialInfluence`, `calculateSpatialInfluences`, `buildSpatialContext`, `SpatialContext`, `SpatialInfluence`, `Point`, `DISTANCE_PRECISION`, `INFLUENCE_PRECISION` |
+| `effectiveStrength.ts` | The one place the two strength signals combine — swappable strategies, clamped-sum pair gravity         | `buildEffectiveStrengths`, `EffectiveStrength`, `CombineStrategy`, `StrategyName`, `STRATEGIES`, `DEFAULT_STRATEGY`, `INTENT_WEIGHTED`, `PRODUCT`, `LIFT`, `INTENT_WEIGHT`                                         |
+| `canvasDiff.ts`        | The only module with a notion of _before_ — compares two documents; keeps no listener or log of its own | `diffCanvas`, `CanvasDiff`, `CanvasChange`, `PairDelta`, `Delta`, `RelationEndpoints`                                                                                                                              |
+| `events.ts`            | Restates a `CanvasDiff` as an ordered event list — structural events + classified pair events           | `deriveEvents`, `SpatialEvent`, `PairSnapshot`, `STRONG_PROXIMITY`, `WEAK_PROXIMITY`                                                                                                                               |
+| `eventStream.ts`       | In-process subscribable buffer of events (no WebSockets); the app-wide singleton lives here             | `createEventStream`, `spatialEventStream`, `SpatialEventStream`, `EventListener`, `DEFAULT_BUFFER_SIZE`                                                                                                            |
+| `grounding.ts`         | Types only for the grounding layer (screenshot-pixel regions)                                           | `Grounding`, `GroundedNodeRegion`, `ImageSize`, `VisualId`                                                                                                                                                         |
+| `index.ts`             | Barrel — the single `@/domain` import surface used by the adapter and UI                                | re-exports all of the above                                                                                                                                                                                        |
 
 ### `src/canvas/adapter/` — the only code that knows both sides
 
@@ -144,6 +160,7 @@ without a DOM.
 | `relationGeometry.ts` | Measures each relation arrow's drawn path — world-space bounds + a point **on** the curve. Never throws     | `getRelationGeometry`                                                                                                                                                                                                 |
 | `contextualField.ts`  | Editor-side writes for the contextual field (set/clear radius, with history mark)                           | `setContextualFieldRadius`, `selectedPostItIds`                                                                                                                                                                       |
 | `metadata.ts`         | Non-derivable node state via tldraw side-effects — `createdAt` / `updatedAt` / `createdBy`, `meta.relation` | `registerNodeMetadata`, `restoringNodes`                                                                                                                                                                              |
+| `spatialEvents.ts`    | Drives the pure `diffCanvas` from live edits — holds the previous document, diffs on store change, emits    | `registerSpatialEvents`                                                                                                                                                                                               |
 | `ids.ts`              | Identity mapping: `NodeId` ⇄ `TLShapeId` (and the relation equivalents), tldraw-runtime-free                | `nodeIdToShapeId`, `shapeIdToNodeId`, `relationIdToShapeId`, `shapeIdToRelationId`, `createNodeId`                                                                                                                    |
 | `richText.ts`         | Pure plain-text ⇄ rich-text conversion (formatting is intentionally lossy on rebuild)                       | `plainTextToRichText`, `richTextToPlainText`                                                                                                                                                                          |
 
@@ -172,26 +189,28 @@ Every decision that could put a box in the wrong place lives in a pure function;
 
 ### `src/` and `src/canvas/` — app shell & wiring
 
-| File                | Responsibility                                                                                 | Key exports                                                    |
-| ------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `main.tsx`          | React entry point — mounts `<App/>` into `#root`                                               | —                                                              |
-| `App.tsx`           | Thin shell that renders `<Canvas/>`                                                            | `App`                                                          |
-| `canvas/Canvas.tsx` | The `<Tldraw>` wrapper — `persistenceKey`, `onMount` (registers metadata, dev `window.editor`) | `Canvas`                                                       |
-| `canvas/config.tsx` | Module-scope registration of shape utils, tools, UI overrides, and custom components           | `customShapeUtils`, `customTools`, `uiOverrides`, `components` |
-| `index.css`         | Global styles + `tldraw.css` import                                                            | —                                                              |
+| File                         | Responsibility                                                                                                                                                            | Key exports                                                    |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `main.tsx`                   | React entry point — mounts `<App/>` into `#root`                                                                                                                          | —                                                              |
+| `App.tsx`                    | Thin shell that renders `<Canvas/>`                                                                                                                                       | `App`                                                          |
+| `canvas/Canvas.tsx`          | The `<Tldraw>` wrapper — `persistenceKey`, `onMount` (registers metadata + the event stream, returns a disposer, dev `window.editor` / `spatialEvents` / `seedDemoScene`) | `Canvas`                                                       |
+| `canvas/config.tsx`          | Module-scope registration of shape utils, tools, UI overrides, and custom components                                                                                      | `customShapeUtils`, `customTools`, `uiOverrides`, `components` |
+| `canvas/dev/seedScenario.ts` | Dev-only helper that lays out the MVP 1 §8 demonstration scene (three post-its, one field)                                                                                | `seedDemoScene`                                                |
+| `index.css`                  | Global styles + `tldraw.css` import                                                                                                                                       | —                                                              |
 
 ### `src/canvas/ui/` — React panels & overlays
 
-| File                           | Responsibility                                                                              | Key exports              |
-| ------------------------------ | ------------------------------------------------------------------------------------------- | ------------------------ |
-| `InspectorPanel.tsx`           | Live canonical JSON, Copy/Import, grounded-screenshot export, and the three strength tables | `InspectorPanel`         |
-| `PostItStylePanel.tsx`         | Custom StylePanel — hosts the contextual-field and gravity controls + colour swatch rows    | `PostItStylePanel`       |
-| `ContextualFieldControl.tsx`   | Radius input for the selection (draft held, committed on blur/Enter/unmount)                | `ContextualFieldControl` |
-| `RelationGravityControl.tsx`   | Gravity input for the selected relation arrows (same draft/commit mechanics, no clear)      | `RelationGravityControl` |
-| `ContextualFieldOverlay.tsx`   | `OnTheCanvas` overlay drawing each node's field as a circle, behind shapes                  | `ContextualFieldOverlay` |
-| `InfluenceBadges.tsx`          | Per-node `→` / `←` / distance badges for the single selected node                           | `InfluenceBadges`        |
-| `ContextualFieldToggle.tsx`    | Show/hide switch for the field overlay                                                      | `ContextualFieldToggle`  |
-| `contextualFieldVisibility.ts` | Module-scope tldraw `atom` shared by the toggle and overlay (not persisted, not canonical)  | `showContextualFields`   |
+| File                           | Responsibility                                                                                             | Key exports              |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `InspectorPanel.tsx`           | Live canonical JSON, Copy/Import, grounded-screenshot export, the three strength tables, and the event log | `InspectorPanel`         |
+| `EventLogPanel.tsx`            | Live view of the spatial event stream (newest first, Clear); reads the module-scope singleton              | `EventLogPanel`          |
+| `PostItStylePanel.tsx`         | Custom StylePanel — hosts the contextual-field and gravity controls + colour swatch rows                   | `PostItStylePanel`       |
+| `ContextualFieldControl.tsx`   | Radius input for the selection (draft held, committed on blur/Enter/unmount)                               | `ContextualFieldControl` |
+| `RelationGravityControl.tsx`   | Gravity input for the selected relation arrows (same draft/commit mechanics, no clear)                     | `RelationGravityControl` |
+| `ContextualFieldOverlay.tsx`   | `OnTheCanvas` overlay drawing each node's field as a circle, behind shapes                                 | `ContextualFieldOverlay` |
+| `InfluenceBadges.tsx`          | Per-node `→` / `←` / distance badges for the single selected node                                          | `InfluenceBadges`        |
+| `ContextualFieldToggle.tsx`    | Show/hide switch for the field overlay                                                                     | `ContextualFieldToggle`  |
+| `contextualFieldVisibility.ts` | Module-scope tldraw `atom` shared by the toggle and overlay (not persisted, not canonical)                 | `showContextualFields`   |
 
 ### Config & tooling (root)
 
@@ -209,11 +228,11 @@ Every decision that could put a box in the wrong place lives in a pure function;
 Three layers, because the pure layer alone shipped two bugs it couldn't see. See the README's
 [Testing](./README.md#testing) section.
 
-| Layer              | Files                                                                                                                                                                                                           | Env     |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff}.test.ts`, `adapter/adapter.test.ts`, `adapter/relations.test.ts`, `grounding/{projection,grounding,visualId,annotationLayer,arrowAware}.test.ts` | `node`  |
-| Real editor        | `adapter/editor.test.ts`, `adapter/relationEditor.test.ts`, `grounding/groundedExport.test.ts`                                                                                                                  | `jsdom` |
-| Rendered component | `ui/ContextualFieldControl.test.tsx`, `ui/RelationGravityControl.test.tsx`, `ui/ContextualFieldOverlay.test.tsx`, `ui/InfluenceBadges.test.tsx`                                                                 | `jsdom` |
+| Layer              | Files                                                                                                                                                                                                                              | Env     |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff,events,eventStream}.test.ts`, `adapter/adapter.test.ts`, `adapter/relations.test.ts`, `grounding/{projection,grounding,visualId,annotationLayer,arrowAware}.test.ts` | `node`  |
+| Real editor        | `adapter/editor.test.ts`, `adapter/relationEditor.test.ts`, `adapter/spatialEvents.test.ts`, `dev/seedScenario.test.ts`, `grounding/groundedExport.test.ts`                                                                        | `jsdom` |
+| Rendered component | `ui/ContextualFieldControl.test.tsx`, `ui/RelationGravityControl.test.tsx`, `ui/ContextualFieldOverlay.test.tsx`, `ui/InfluenceBadges.test.tsx`, `ui/EventLogPanel.test.tsx`                                                       | `jsdom` |
 
 ## Where to start reading
 
@@ -221,7 +240,8 @@ Three layers, because the pure layer alone shipped two bugs it couldn't see. See
 2. `src/domain/node.ts` — what a node is.
 3. `src/canvas/adapter/canvasView.ts` — how the whole document is assembled (`getCanvasDocument`).
 4. `src/canvas/adapter/adapter.ts` — the shape ⇄ node round trip.
-5. `src/canvas/Canvas.tsx` + `src/canvas/config.tsx` — how it all mounts and registers.
+5. `src/domain/events.ts` + `src/canvas/adapter/spatialEvents.ts` — how a change becomes an event.
+6. `src/canvas/Canvas.tsx` + `src/canvas/config.tsx` — how it all mounts and registers.
 
 ## Key invariants
 
@@ -241,6 +261,13 @@ Three layers, because the pure layer alone shipped two bugs it couldn't see. See
   `influence`, so both layers read exactly as they did before a combined layer existed. The
   combination lives only in `spatialContext.effectiveStrengths`, where every row carries the two
   inputs it used and names the strategy that produced it, making it reproducible from the JSON.
+- **Events are a record of change, not canvas state.** They are derived from a diff of two
+  documents, never stored in one; the stream is in-memory, bounded and not persisted, and nothing
+  reads it back to reconstruct a canvas. A subscriber that wants the current state reads the
+  document.
+- **One store subscription.** `registerSpatialEvents` is the only thing listening to the store for
+  change detection, so every consumer sees the same ordered events. Its disposer is returned from
+  `onMount` — dropping it would double every event under StrictMode.
 - **One Canvas is one tldraw page.** The page menu is hidden to keep that true.
 
 ## See also

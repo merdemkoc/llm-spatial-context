@@ -12,6 +12,11 @@
  * Influence is derived, never persisted — recomputed from geometry on every
  * render, which is why dragging a node changes it with no stored state to
  * invalidate.
+ *
+ * A fourth section, the event log, answers the one question the other three
+ * can't: not what the canvas *is* but what just *changed* about it. It reads the
+ * event stream rather than this document, which is why it takes no `canvas`
+ * prop — see `EventLogPanel`.
  */
 import { useState } from 'react'
 import { useEditor } from 'tldraw'
@@ -23,6 +28,7 @@ import { restoringNodes } from '@/canvas/adapter/metadata'
 import { createRelations, isRelationArrow } from '@/canvas/adapter/relations'
 import { isPostItShape } from '@/canvas/shapes/postItShape'
 import { exportGroundedScreenshot } from '@/canvas/grounding/groundedExport'
+import { EventLogPanel } from '@/canvas/ui/EventLogPanel'
 
 export function InspectorPanel() {
 	const editor = useEditor()
@@ -131,7 +137,7 @@ export function InspectorPanel() {
 				display: 'flex',
 				flexDirection: 'column',
 				gap: 8,
-				// Three collapsible sections can outgrow `maxHeight`, and without this the
+				// Four collapsible sections can outgrow `maxHeight`, and without this the
 				// overflow renders *outside* the panel's own background rather than
 				// scrolling inside it. `onWheel` above already keeps the scroll from
 				// reaching the canvas and zooming it.
@@ -197,6 +203,11 @@ export function InspectorPanel() {
 			<RelationSection canvas={canvas} />
 			<InfluenceSection canvas={canvas} />
 			<EffectiveStrengthSection canvas={canvas} />
+
+			{/* The three sections above show the canvas now; this shows what just
+			    changed. It reads the module-scope stream fed by registerSpatialEvents,
+			    not the document, so it needs no canvas prop. */}
+			<EventLogPanel />
 		</div>
 	)
 }
