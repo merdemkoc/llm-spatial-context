@@ -18,6 +18,7 @@ Built on tldraw, Vite, React 19 and TypeScript.
   - [Relational gravity](#relational-gravity)
   - [Effective strength](#effective-strength)
   - [Change detection](#change-detection)
+  - [Event stream](#event-stream)
   - [Grounded screenshot](#grounded-screenshot)
 - [Layout](#layout)
 - [Where to add things](#where-to-add-things)
@@ -73,13 +74,13 @@ The canvas below reproduces that structure — nothing from the sessions themsel
 
 ![Four post-its exported as a grounded screenshot, outlined in pink and labelled N1 to N4, with two relation arrows — one labelled 'constrains' — connecting separate pairs](docs/images/gravity-canvas-grounded.png)
 
-Where this is pointed — none of it built:
+Where this is pointed — no AI is built:
 
 - a canvas as a **spatial computational substrate** rather than a rendering surface, where structure comes from configuration rather than containment;
-- an AI **observing how the representation changes** as the user works — a node moved, an arrow drawn, text edited — rather than answering prompts;
+- an AI **observing how the representation changes** as the user works — a node moved, an arrow drawn — rather than answering prompts. The [event stream](#event-stream) such an observer would subscribe to now exists; nothing subscribes to it, and a text edit still produces no event;
 - that AI **writing entities and relations back** into the space it is reasoning about.
 
-The prototype deliberately doesn't attempt any of it. It establishes a substrate those questions can be tested on. The full research note — the argument, the Gemini tests and the trajectory — is in [`docs/why.md`](./docs/why.md).
+The prototype deliberately attempts none of the reasoning half. It establishes a substrate those questions can be tested on. The full research note — the argument, the Gemini tests and the trajectory — is in [`docs/why.md`](./docs/why.md).
 
 ## Getting started
 
@@ -188,6 +189,8 @@ A `CanvasDocument` deliberately separates what it knows about a canvas into four
 The first three speak in **canvas coordinates**; `grounding` speaks in **screenshot pixels**. That is why it is its own layer rather than extra fields on `spatial`.
 
 A fifth array, `spatialContext.effectiveStrengths`, is deliberately _not_ a fifth layer. It introduces no new claim about the canvas — every row is a function of the two layers above it, carried alongside the inputs it used — so it is a **reading** of the layers rather than one of them. See [Effective strength](#effective-strength).
+
+Spatial **events** are not a layer either, and for a firmer reason: they are not in the document at all. All four layers describe the canvas at one instant; an event describes a _transition between two_, so it lives in the [event stream](#event-stream) and never in the JSON.
 
 ```json
 {
@@ -347,7 +350,9 @@ Only connected pairs get a row. A pair with no arrow has no intent to combine, a
 
 ### Change detection
 
-`diffCanvas(before, after)` is the only part of the model with any notion of _before_, and it acquires one the cheapest way available: by being handed two documents. **There is no listener, no log and no history** — a caller that wants change detection holds its own snapshots. That is what keeps `CanvasDocument` a pure function of the store, with nothing to invalidate.
+`diffCanvas(before, after)` is the only part of the model with any notion of _before_, and it acquires one the cheapest way available: by being handed two documents. **The function itself keeps no listener, no log and no history** — a caller that wants change detection holds its own snapshots. That is what keeps `CanvasDocument` a pure function of the store, with nothing to invalidate.
+
+Exactly one caller does hold them: `registerSpatialEvents`, which turns this diff into the [event stream](#event-stream). The split is the point — the comparison stays pure and testable in `src/domain`, and the snapshot bookkeeping lives in the adapter, where a store subscription belongs.
 
 It **reads** the derived layers rather than recomputing them, so a diff can never report a number that disagrees with the JSON the caller is holding. Comparison is exact equality on values the document already rounded, which makes the epsilon self-evident: a change too small to appear in the document cannot appear in a diff of it.
 
@@ -391,6 +396,28 @@ Three decisions are worth naming:
 **`relation_rebound` is an update, not a delete plus a create.** `RelationId` derives from the arrow's shape id, which survives dragging one end onto a different note — so the relation's identity persists through a rebind, and the diff can say so.
 
 **Actions and consequences are two lists, not a tree.** The requirement's examples read as `A moved closer to B → influence increased`, and for a single action that join is recoverable. What the diff must not do is _assert_ it: when two nodes both move, deciding which one caused a given pair's influence to rise is an inference, and inferring causality is exactly what the requirement rules out. So `changes` says what the user did, `pairs` says what the numbers did, and the arrow between them is left to a reader who can see whether it is warranted.
+
+### Event stream
+
+[`diffCanvas`](#change-detection) answers _what is different_ between two canvases. The event stream answers the next question — _what just happened_ — as an ordered, subscribable sequence a debug panel can render one line at a time, and a future AI observer (MVP 2) can consume without ever reconstructing spatial state from a screenshot.
+
+It adds no new truth. `deriveEvents(diff)` restates a diff's two lists as events: the eight change kinds become **structural events**, and each pair's influence delta is _classified_ into the **spatial events** the diff carries but does not name.
+
+```text
+structural   node_created · node_deleted · node_moved · contextual_field_changed
+             relation_created · relation_deleted · relation_rebound · relation_gravity_changed
+spatial      field_entered · field_exited · influence_changed · proximity_changed
+```
+
+A pair's influence is the whole classifier. Crossing zero is a boundary — `field_entered` when influence rises from `0`, `field_exited` when it falls to it. A change with both ends inside the field is `influence_changed`. Crossing a `0.66` / `0.33` band edge while still in range is `proximity_changed` (`strong` / `weak`), which can accompany an `influence_changed`. A pair that only _appeared_ or _vanished_ is a created or deleted node — reported structurally, never as a spurious crossing. Every spatial event carries `previous` and `current` (`{ distance, influence }`), so a transition is legible without holding the surrounding snapshots.
+
+The stream itself is deliberately small: an in-process, subscribable buffer, **no WebSockets**. `registerSpatialEvents(editor, stream)` is the one place the pure `diffCanvas` is driven by live edits — it holds the previous document, re-derives on every document-scope store change, diffs, and emits. In development the running stream is on `window.spatialEvents`, and `window.seedDemoScene()` lays out the walkthrough below. (The subscription is disposed on unmount, so StrictMode's double-mount does not attach two.)
+
+**The walkthrough (`window.seedDemoScene()`, then drag B).** Three post-its; A carries a 500-unit field, B starts outside it, C sits inside. Drag B in from the right and the stream fills — `field_entered`, then `influence_changed` and `proximity_changed` as it strengthens — and ends on the state that is the whole point: B dragged far past the boundary, its influence gone, and the A → B relation still standing at full strength.
+
+![The event stream after the walkthrough: B dragged out of range with influence 0, the A→B relation intact at gravity 1.00, and field_exited / node_moved / relation_created in the event log](docs/images/event-stream.png)
+
+The panel shows all three signals diverging at once: spatial influence `A → B` is `0.000` at distance `1500`, yet relational gravity holds at `1.00` and effective strength stays `0.750`. The event log records how it got there — `relation_created`, then `field_exited` with `infl 0.70 → 0.00` — and never a `relation_deleted`, because moving a node cannot revoke a claim the user made. Proximity and intent are independent, and the stream reports them independently.
 
 ### Grounded screenshot
 
@@ -516,7 +543,9 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 - **A new custom shape** → copy `src/canvas/shapes/PostItShapeUtil.tsx`, then register it in `customShapeUtils` in `src/canvas/config.tsx`.
 - **A new custom tool** → copy `src/canvas/shapes/PostItTool.ts`, register it in `customTools`, add it to `uiOverrides` for its label and shortcut, and add a `TldrawUiMenuItem` to the `Toolbar` override so it actually appears (all three in `src/canvas/config.tsx`).
 - **A different way of combining the two strength signals** → add a `CombineStrategy` to `STRATEGIES` in `src/domain/effectiveStrength.ts` and pass it to `buildSpatialContext`. Nothing else needs to know: the name travels with each row, so the JSON says which function produced it. Don't reach for a new `gravity` scale to get amplification — that is what the strategy is for.
-- **Change detection over time** → `diffCanvas(before, after)` in `src/domain/canvasDiff.ts`. Capture documents with `getCanvasDocument(editor)`; it reads the derived layers rather than recomputing them, so it can't disagree with the JSON you already have.
+- **Change detection over time** → `diffCanvas(before, after)` in `src/domain/canvasDiff.ts`. Capture documents with `getCanvasDocument(editor)`; it reads the derived layers rather than recomputing them, so it can't disagree with the JSON you already have. For changes as they happen, subscribe to the [event stream](#event-stream) instead of holding your own snapshots.
+- **A new event type** → add it to the `SpatialEvent` union in `src/domain/events.ts` and emit it from `deriveEvents`, which is pure and takes a `CanvasDiff`. If the transition isn't visible in a diff, the gap is in `canvasDiff.ts`, not here — add the change kind or pair delta first, so the event stays a restatement of something a reader could already see in the JSON. Give it a line in `describeEvent` in `src/canvas/ui/EventLogPanel.tsx`; the switch is exhaustive, so TypeScript will fail the build until you do.
+- **Something that watches the canvas** (an agent, a logger, an experiment) → `spatialEventStream.subscribe(fn)` from `@/domain`. Don't add a second store subscription: `registerSpatialEvents` is deliberately the only one, so every consumer sees the same ordered events.
 
 ## Known limitations
 
@@ -535,17 +564,22 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 - **`grounding.relations` is keyed by position, not identity** — `R1` is where an arrow sits in reading order for one export, exactly as `N1` is for a Node. Redraw an arrow and the numbering can change; `relationId` inside the entry is the stable handle.
 - **`INTENT_WEIGHT = 0.75` is uncalibrated.** It satisfies "intent counts for significantly more than proximity" and nothing finer, because nothing consumes `effectiveStrength` yet — so there is no task to tune it against. It is one named constant in one file, and the strategy name travels with every row, precisely so the number can be revised without archaeology.
 - **`effectiveStrength` is not in the grounded screenshot.** The export deliberately draws nothing derived, and a combined value is derived twice over. A reader joins it from the JSON via `grounding.nodes`, the way they already do for influence.
-- **`diffCanvas` has no UI and no history.** It compares two documents a caller is holding; nothing in the app records snapshots, so there is no timeline to look at. That was the point — a log would be the second store the rest of the design avoids — but it does mean change detection is only reachable from code today.
+- **The event log is in memory only, and short.** The stream keeps the most recent 200 events and the panel shows 50; a reload starts empty. That is deliberate — events are a record of change, not a fact about the canvas, so persisting them would be the second store the rest of the design avoids — but it does mean the log is a live instrument rather than a session history, and there is no timeline to scrub.
+- **Editing a note's text emits no event.** `diffCanvas` compares geometry, contextual fields and relations — not `content.text` — so a text edit bumps `updatedAt` and changes nothing the stream can see. The event vocabulary is deliberately spatial, and a `content_changed` event would be the first one that isn't. Pinned by a test so it stays a decision.
+- **A drag fills the log.** `registerSpatialEvents` diffs on every document-scope store change, and a drag is many of them, so crossing a boundary mid-gesture emits a run of `influence_changed` rows rather than one summary per gesture. Coalescing them would need a notion of "gesture" the model doesn't have.
+- **An undo appends rather than retracts.** An undo is a document change like any other, so the stream reports the events that _reverse_ it (`node_moved`, then whichever crossing that implies). A subscriber is never told to un-act on an event it already handled. Pinned by a test.
+- **Events carry no causality.** `deriveEvents` inherits the diff's refusal to attribute: a `node_moved` and the `influence_changed` rows around it arrive as siblings, never as cause and effect, because with two nodes moving the attribution would be an inference. See [Change detection](#change-detection).
+- **The proximity thresholds are uncalibrated**, exactly like `INTENT_WEIGHT`. `STRONG_PROXIMITY = 0.66` and `WEAK_PROXIMITY = 0.33` split a continuous influence into bands so `proximity_changed` has something to report; nothing consumes the bands yet, so there is no task to tune them against. Two named constants in one file.
 
 ## Testing
 
 `npm test` runs three layers, because the first one alone turned out not to be enough — two bugs shipped that were invisible to pure tests (a meta write the record validator rejected, and a control whose commit was destroyed by the selection change that triggered it).
 
-| Layer              | Files                                                                                                                                                                               | Environment                |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff}.test.ts`, `adapter/{adapter,relations}.test.ts`, `grounding/{visualId,projection,grounding,annotationLayer}.test.ts` | `node` — no DOM, no editor |
-| Real editor        | `adapter/{editor,relationEditor}.test.ts`, `grounding/groundedExport.test.ts`                                                                                                       | `jsdom`                    |
-| Rendered component | `ui/*.test.tsx`                                                                                                                                                                     | `jsdom`                    |
+| Layer              | Files                                                                                                                                                                                                  | Environment                |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
+| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff,events,eventStream}.test.ts`, `adapter/{adapter,relations}.test.ts`, `grounding/{visualId,projection,grounding,annotationLayer}.test.ts` | `node` — no DOM, no editor |
+| Real editor        | `adapter/{editor,relationEditor,spatialEvents}.test.ts`, `dev/seedScenario.test.ts`, `grounding/groundedExport.test.ts`                                                                                | `jsdom`                    |
+| Rendered component | `ui/*.test.tsx`                                                                                                                                                                                        | `jsdom`                    |
 
 The default environment is `node`; the DOM suites opt in with a `@vitest-environment jsdom` docblock. That keeps the pure layer honest: `src/domain`, `src/canvas/adapter` and `postItShape.ts` import tldraw for _types only_, and adding a runtime tldraw import to any of them will break it.
 

@@ -3,10 +3,16 @@
  *
  * The rest of the model describes a canvas at one instant. This is the only
  * module with any notion of *before*, and it acquires one the cheapest way
- * available: by being handed two documents and comparing them. There is no
- * listener, no log and no history — a caller that wants change detection holds
- * its own snapshots and calls this, which is what keeps `CanvasDocument` a pure
- * function of the store and leaves nothing to invalidate.
+ * available: by being handed two documents and comparing them. It keeps no
+ * listener, no log and no history of its own — a caller that wants change
+ * detection holds its own snapshots and calls this, which is what keeps
+ * `CanvasDocument` a pure function of the store and leaves nothing to
+ * invalidate.
+ *
+ * `canvas/adapter/spatialEvents.ts` is that caller: it holds the previous
+ * document, diffs on every store change, and turns the result into the event
+ * stream. The split keeps this comparison pure and testable while the
+ * subscription lives in the adapter, where tldraw belongs.
  *
  * It **reads** the derived layers rather than recomputing them. Both documents
  * already carry `influences` and `effectiveStrengths`, rounded and derived, so
