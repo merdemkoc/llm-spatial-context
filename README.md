@@ -8,6 +8,7 @@ Built on tldraw, Vite, React 19 and TypeScript.
 
 ## Contents
 
+- [Why this exists](#why-this-exists)
 - [Getting started](#getting-started)
 - [Scripts](#scripts)
 - [Architecture](#architecture)
@@ -24,6 +25,58 @@ Built on tldraw, Vite, React 19 and TypeScript.
 - [Docs](#docs)
 
 For a file-by-file map of the code — every module, its key exports, and the test layout — see [`CODEMAP.md`](./CODEMAP.md).
+
+## Why this exists
+
+I started from one question:
+
+> **What changes when a 2D canvas is not treated merely as a visual interface, but as a structured representation of human thought that an AI can directly reason over?**
+
+Answering it means breaking a canvas into signals and keeping them apart, because they are not the same kind of evidence:
+
+```mermaid
+graph TD
+    canvas(["CANVAS"])
+    canvas --> content["<b>Content</b>"]
+    canvas --> spatial["<b>Spatial</b>"]
+    canvas --> relation["<b>Relation</b>"]
+    content --> text["text"]
+    spatial --> distance["distance"]
+    distance --> influence["influence"]
+    relation --> arrow["arrow"]
+    arrow --> gravity["gravity"]
+
+    classDef semantic fill:#eef7ee,stroke:#5a5,color:#243;
+    classDef implicit fill:#fff7e6,stroke:#c93,color:#663;
+    classDef explicit fill:#eef2fb,stroke:#55a,color:#224;
+    class content,text semantic;
+    class spatial,distance,influence implicit;
+    class relation,arrow,gravity explicit;
+```
+
+| Signal                 | What does it tell us?                                | Strength          |
+| ---------------------- | ---------------------------------------------------- | ----------------- |
+| **Content**            | What does the node say?                              | Semantic evidence |
+| **Spatial influence**  | How are nodes organized in space?                    | Implicit signal   |
+| **Relational gravity** | What relationship did the user explicitly establish? | Explicit signal   |
+
+**These must not collapse into a single notion of "relationship."** A node can be semantically related to another without being spatially close; two nodes can be spatially close with no explicit relationship; and an explicit relation can hold between two nodes that are far apart. Keeping them distinct is what lets a model reason across all three without losing track of where each claim came from — the mechanics are in [Four layers of context](#four-layers-of-context).
+
+The fourth layer answers a different question: which _pixels_ is this node? A model handed a screenshot and a JSON document would otherwise have to work that out from world coordinates, and inferring it is exactly the guess the rest of this design removes — so [`grounding`](#grounded-screenshot) states the mapping instead.
+
+Hand-run against Gemini with a grounded PNG and the canonical JSON — nothing from those sessions is checked into this repo — the model grounded each entity to its visual object, recovered the direction of the explicit relations, and reasoned about proximity. The useful part was a disagreement: the arrows assert `N4 → N1` and `N3 → N2`, while the notes' content implies `N4 → N3 → N1 → N2`. The representation let the model **see both structures instead of averaging them into one graph**.
+
+The canvas below reproduces that structure — nothing from the sessions themselves survives, so this is a reconstruction rather than the artifact the model was handed:
+
+![Four post-its exported as a grounded screenshot, outlined in pink and labelled N1 to N4, with two relation arrows — one labelled 'constrains' — connecting separate pairs](docs/images/gravity-canvas-grounded.png)
+
+Where this is pointed — none of it built:
+
+- a canvas as a **spatial computational substrate** rather than a rendering surface, where structure comes from configuration rather than containment;
+- an AI **observing how the representation changes** as the user works — a node moved, an arrow drawn, text edited — rather than answering prompts;
+- that AI **writing entities and relations back** into the space it is reasoning about.
+
+The prototype deliberately doesn't attempt any of it. It establishes a substrate those questions can be tested on. The full research note — the argument, the Gemini tests and the trajectory — is in [`docs/why.md`](./docs/why.md).
 
 ## Getting started
 
