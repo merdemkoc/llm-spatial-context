@@ -2,16 +2,15 @@
  * The root canonical model.
  *
  * Relations are graph-level entities, deliberately held here rather than
- * embedded inside Nodes. Nothing implements them yet — the point is that the
- * architecture already has the right place for them, so adding relations later
- * doesn't require redesigning the Canvas abstraction.
+ * embedded inside Nodes: an arrow belongs to the graph, not to either end of it.
  *
- * The document holds three distinct layers, and keeping them distinct is the
+ * The document holds four distinct layers, and keeping them distinct is the
  * whole design:
  *
  *   nodes[].spatial + contextualField   where a node is, and how far it reaches
  *   spatialContext                      what the layout implies, derived
- *   relations                           what the user said, explicitly
+ *   relations                           what the user said, explicitly — and how
+ *                                       strongly they said it
  *   grounding                           where a node is in a screenshot, derived
  *
  * A reader gets both the structure that was stated and the structure that was
@@ -50,6 +49,21 @@ export interface Relation {
 	to: NodeId
 
 	/**
+	 * How strongly the user asserted this relationship. 0–1.
+	 *
+	 * A second strength signal, independent of the one in `spatialContext`: that is
+	 * what the layout implies, this is what the user said. Nothing here is derived
+	 * from distance, and moving either node leaves it untouched — two nodes 484 units
+	 * apart can report a spatial influence of `0.032` and a gravity of `1`, and that
+	 * disagreement is information rather than an inconsistency to resolve. The two
+	 * are deliberately never combined into one number.
+	 *
+	 * Directional like the rest of the record: `from → to` at this strength says
+	 * nothing about `to → from`, which exists only if the user drew it too.
+	 */
+	gravity: number
+
+	/**
 	 * What the user called it — the arrow's label.
 	 *
 	 * Optional and **never defaulted**. An unlabelled arrow means "connected, and
@@ -58,6 +72,50 @@ export interface Relation {
 	 * make. Same rule as `ContextualField`: absent and empty are different states.
 	 */
 	type?: string
+}
+
+/**
+ * What drawing an arrow asserts, before the user says anything more.
+ *
+ * `gravity` is required and defaulted where `type` is optional and never
+ * defaulted, and the difference is not an inconsistency: `type` is a *word the
+ * user chose*, so inventing one would invent the claim. Gravity is the strength
+ * of *the gesture itself*, and connecting two notes on purpose is the strongest
+ * assertion this tool can make — so the default is what the act already meant,
+ * not a guess about content.
+ *
+ * That is also what makes an arrow drawn before this field existed read back as a
+ * full-strength relation rather than a broken one.
+ */
+export const DEFAULT_RELATION_GRAVITY = 1
+
+/** Enough to see a deliberate 0.35 or 0.05; beyond this it's float noise. */
+const GRAVITY_PRECISION = 3
+
+/**
+ * Reads an unvalidated value as a gravity.
+ *
+ * Takes `unknown` on purpose: every source of a gravity is untrusted. It arrives
+ * from `shape.meta` — JSON tldraw stores but never inspects — or from an imported
+ * document typed only by assertion, and neither can be relied on to hold a number
+ * in range.
+ *
+ * A gravity of `0` is **kept**, not treated as absent, exactly as a
+ * `contextualField.radius` of `0` is: "connected, but the user says barely" is a
+ * claim, and scrubbing it back to the default would silently overrule them. Only
+ * a value that isn't a usable number at all falls back.
+ *
+ * Out of range is clamped rather than rejected. `1.5` is not a different kind of
+ * claim from `1` — it's the same claim with a broken scale, and the scale is what
+ * this function owns. Rounded here, once, at the boundary, for the same reason
+ * `buildSpatialContext` rounds: the store, the JSON and the UI then cannot
+ * disagree about the number.
+ */
+export function clampGravity(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_RELATION_GRAVITY
+
+	const factor = 10 ** GRAVITY_PRECISION
+	return Math.round(Math.min(1, Math.max(0, value)) * factor) / factor
 }
 
 export interface CanvasMetadata {

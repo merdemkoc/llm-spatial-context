@@ -152,3 +152,63 @@ describe('drawGroundingLayer', () => {
 		expect(ctx.calls).toEqual([])
 	})
 })
+
+describe('relation badges', () => {
+	it('writes each relation’s label once, in the order given', () => {
+		const ctx = recorder()
+
+		drawGroundingLayer(ctx, [], 1, [
+			{ label: 'g 1.00', at: { x: 100, y: 100 } },
+			{ label: 'g 0.35', at: { x: 200, y: 400 } },
+		])
+
+		expect(callsNamed(ctx, 'fillText').map((call) => call[1])).toEqual(['g 1.00', 'g 0.35'])
+	})
+
+	/**
+	 * Centred on the point, not anchored beside it: the point is a position on the
+	 * arrow, and a badge hanging off one side of it would drift away from the line
+	 * it belongs to as the label got longer.
+	 */
+	it('centres the badge on the point', () => {
+		const ctx = recorder()
+
+		drawGroundingLayer(ctx, [], 1, [{ label: 'g 1.00', at: { x: 500, y: 300 } }])
+
+		const [, x, y, width, height] = callsNamed(ctx, 'fillRect')[0]
+		expect((x as number) + (width as number) / 2).toBe(500)
+		expect((y as number) + (height as number) / 2).toBe(300)
+	})
+
+	it('grows with the scale', () => {
+		const ctx = recorder()
+
+		drawGroundingLayer(ctx, [], 3, [{ label: 'g 1.00', at: { x: 500, y: 300 } }])
+
+		expect(ctx.font).toContain(`${LABEL_FONT_SIZE * 3}px`)
+	})
+
+	/** No relations is the default, and it must draw exactly what it drew before. */
+	it('is absent unless asked for', () => {
+		const withRelations = recorder()
+		const without = recorder()
+
+		drawGroundingLayer(withRelations, [annotation('N1', rect(0, 0, 100, 80))], 1, [])
+		drawGroundingLayer(without, [annotation('N1', rect(0, 0, 100, 80))], 1)
+
+		expect(withRelations.calls).toEqual(without.calls)
+	})
+
+	/** Drawn after the outlines, so a badge landing on one stays legible over it. */
+	it('draws over the outlines rather than under them', () => {
+		const ctx = recorder()
+
+		drawGroundingLayer(ctx, [annotation('N1', rect(0, 0, 100, 80))], 1, [
+			{ label: 'g 1.00', at: { x: 50, y: 40 } },
+		])
+
+		const lastStroke = ctx.calls.findLastIndex((call) => call[0] === 'stroke')
+		const badge = ctx.calls.findLastIndex((call) => call[0] === 'fillText')
+		expect(badge).toBeGreaterThan(lastStroke)
+	})
+})

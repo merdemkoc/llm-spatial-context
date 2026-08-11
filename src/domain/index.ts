@@ -6,6 +6,8 @@ export type {
 	RelationId,
 } from '@/domain/canvas'
 
+export { clampGravity, DEFAULT_RELATION_GRAVITY } from '@/domain/canvas'
+
 export type {
 	CanvasNode,
 	ContextualField,

@@ -12,6 +12,7 @@
  * measured from the decoded image. It is passed in per call.
  */
 import type { CanvasNode, Point } from '@/domain'
+import { nodeCenter } from '@/domain'
 
 /** The world-space rectangle an exported image covers. */
 export interface GroundingProjection {
@@ -127,6 +128,32 @@ export function toImagePoint(point: Point, projection: GroundingProjection, scal
 		x: (point.x - projection.minX) * scale,
 		y: (point.y - projection.minY) * scale,
 	}
+}
+
+/**
+ * Where a relation between two nodes reads, in image pixels: the midpoint of
+ * their centres.
+ *
+ * Derived from the two nodes rather than measured from the arrow shape, which
+ * keeps this pure and keeps the position **re-derivable by a reader** — the same
+ * midpoint follows from `nodes[].spatial` and `grounding` alone, so a badge on the
+ * PNG can be checked against the JSON instead of trusted.
+ *
+ * The cost is a bent or elbow arrow, whose curve leaves the straight line between
+ * the centres: the badge stays at the midpoint and the arrow doesn't pass through
+ * it. Following the drawn curve would mean reading tldraw's arrow geometry, which
+ * this layer deliberately can't see.
+ */
+export function relationImagePoint(
+	from: CanvasNode,
+	to: CanvasNode,
+	projection: GroundingProjection,
+	scale: number
+): Point {
+	const start = nodeCenter(from)
+	const end = nodeCenter(to)
+
+	return toImagePoint({ x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }, projection, scale)
 }
 
 /** The node's outline in image pixels, clockwise from the top-left. */

@@ -7,8 +7,14 @@
  * `(-40, -40)` and the node's top-left lands at `(80, 80)` in the image.
  */
 import { describe, expect, it } from 'vitest'
-import { createPostItNode, type CanvasDocument, type PostItNode } from '@/domain'
-import { buildGrounding, deriveGrounding, groundedDocument } from '@/canvas/grounding/grounding'
+import { createPostItNode, type CanvasDocument, type PostItNode, type Relation } from '@/domain'
+import {
+	buildGrounding,
+	deriveGrounding,
+	formatGravity,
+	groundedDocument,
+	relationAnnotations,
+} from '@/canvas/grounding/grounding'
 import { groundingProjection } from '@/canvas/grounding/projection'
 import { assignVisualIds } from '@/canvas/grounding/visualId'
 
@@ -158,6 +164,68 @@ describe('deriveGrounding', () => {
 				for (const value of bbox) expect(Number.isFinite(value)).toBe(true)
 			}
 		}
+	})
+})
+
+describe('formatGravity', () => {
+	/** The prefix is what keeps a badge from reading as a distance or a node label. */
+	it('names the quantity it shows', () => {
+		expect(formatGravity(1)).toBe('g 1.00')
+		expect(formatGravity(0.35)).toBe('g 0.35')
+	})
+
+	it('shows a zero rather than nothing', () => {
+		expect(formatGravity(0)).toBe('g 0.00')
+	})
+})
+
+describe('relationAnnotations', () => {
+	const nodes = { a: node('a', 0, 0), b: node('b', 600, 0) }
+	const projection = groundingProjection(Object.values(nodes), 40)
+
+	function relation(overrides: Partial<Relation> = {}): Record<string, Relation> {
+		return { r1: { id: 'r1', from: 'a', to: 'b', gravity: 1, ...overrides } }
+	}
+
+	it('labels a relation with its gravity, at the midpoint of its endpoints', () => {
+		const annotations = relationAnnotations(relation({ gravity: 0.35 }), nodes, projection, 2)
+
+		// Centres are (120, 80) and (720, 80); their midpoint is (420, 80), and the
+		// projection starts at (-40, -40), so at scale 2 that lands at (920, 240).
+		expect(annotations).toEqual([{ label: 'g 0.35', at: { x: 920, y: 240 } }])
+	})
+
+	/** The label says what the JSON says: the badge can't drift from the document. */
+	it('reads the gravity from the relation rather than recomputing anything', () => {
+		expect(relationAnnotations(relation({ gravity: 0 }), nodes, projection, 2)[0].label).toBe(
+			'g 0.00'
+		)
+	})
+
+	it('is empty when nothing is related', () => {
+		expect(relationAnnotations({}, nodes, projection, 2)).toEqual([])
+	})
+
+	/**
+	 * An imported document can name a node that isn't there. A badge floating over
+	 * nothing would be worse than a missing one — it would point confidently at the
+	 * empty canvas.
+	 */
+	it('skips a relation whose endpoints are not both present', () => {
+		expect(relationAnnotations(relation({ to: 'nobody' }), nodes, projection, 2)).toEqual([])
+		expect(relationAnnotations(relation({ from: 'nobody' }), nodes, projection, 2)).toEqual([])
+	})
+
+	it('annotates every relation, including both directions of a pair', () => {
+		const both: Record<string, Relation> = {
+			r1: { id: 'r1', from: 'a', to: 'b', gravity: 1 },
+			r2: { id: 'r2', from: 'b', to: 'a', gravity: 0.5 },
+		}
+
+		expect(relationAnnotations(both, nodes, projection, 2).map((a) => a.label)).toEqual([
+			'g 1.00',
+			'g 0.50',
+		])
 	})
 })
 

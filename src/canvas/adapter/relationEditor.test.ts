@@ -25,7 +25,14 @@ import { nodeToShape } from '@/canvas/adapter/adapter'
 import { getCanvasDocument } from '@/canvas/adapter/canvasView'
 import { nodeIdToShapeId } from '@/canvas/adapter/ids'
 import { registerNodeMetadata } from '@/canvas/adapter/metadata'
-import { ARROW_SHAPE_TYPE, RELATION_META_KEY, createRelations } from '@/canvas/adapter/relations'
+import {
+	ARROW_SHAPE_TYPE,
+	RELATION_GRAVITY_META_KEY,
+	RELATION_META_KEY,
+	createRelations,
+	selectedRelationArrowIds,
+	setRelationGravity,
+} from '@/canvas/adapter/relations'
 import { RELATION_TOOL_ID, RelationTool } from '@/canvas/shapes/RelationTool'
 
 const shapeUtils = [...defaultShapeUtils, PostItShapeUtil]
@@ -63,11 +70,13 @@ function createArrow({
 	from,
 	to,
 	label,
+	gravity,
 	isRelation = true,
 }: {
 	from?: TLShapeId
 	to?: TLShapeId
 	label?: string
+	gravity?: number
 	isRelation?: boolean
 }) {
 	const id = createShapeId()
@@ -76,7 +85,15 @@ function createArrow({
 		id,
 		type: ARROW_SHAPE_TYPE,
 		parentId: editor.getCurrentPageId(),
-		meta: isRelation ? { [RELATION_META_KEY]: true } : {},
+		// The tool stamps the flag and nothing else, so `gravity` is omitted unless a
+		// test is about one — which keeps "a freshly drawn arrow carries no stored
+		// gravity" the default case here, as it is in the app.
+		meta: isRelation
+			? {
+					[RELATION_META_KEY]: true,
+					...(gravity === undefined ? {} : { [RELATION_GRAVITY_META_KEY]: gravity }),
+				}
+			: {},
 		...(label === undefined ? {} : { props: { richText: toRichText(label) } }),
 	})
 
@@ -247,6 +264,140 @@ describe('relations as the canvas changes', () => {
 	})
 })
 
+describe('gravity', () => {
+	/** Drawing the arrow is the claim; nothing has to be typed for it to be full strength. */
+	it('is the full-strength default for a freshly drawn relation', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		createArrow({ from: a, to: b })
+
+		expect(only().gravity).toBe(1)
+	})
+
+	it('is whatever the arrow stores', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		createArrow({ from: a, to: b, gravity: 0.35 })
+
+		expect(only().gravity).toBe(0.35)
+	})
+
+	it('survives moving a node — distance has no say in it', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		createArrow({ from: a, to: b, gravity: 0.4 })
+
+		editor.updateShapes([{ id: a, type: 'post-it', x: 9000, y: 9000 }])
+
+		expect(only().gravity).toBe(0.4)
+	})
+
+	it('is only ever on the direction the user drew', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		createArrow({ from: b, to: a, gravity: 0.5 })
+
+		const all = Object.values(relations())
+		expect(all).toHaveLength(1)
+		expect(all[0]).toMatchObject({ from: 'b', to: 'a', gravity: 0.5 })
+	})
+})
+
+describe('setRelationGravity', () => {
+	it('writes the gravity and reports what it changed', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		const arrow = createArrow({ from: a, to: b })
+
+		expect(setRelationGravity(editor, [arrow], 0.25)).toBe(1)
+		expect(only().gravity).toBe(0.25)
+	})
+
+	/** The whole reason the patch carries one key: un-tagging would make it decoration. */
+	it('leaves the arrow a relation', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		const arrow = createArrow({ from: a, to: b, label: 'causes' })
+
+		setRelationGravity(editor, [arrow], 0.25)
+
+		expect(editor.getShape(arrow)?.meta[RELATION_META_KEY]).toBe(true)
+		expect(only()).toMatchObject({ from: 'a', to: 'b', type: 'causes', gravity: 0.25 })
+	})
+
+	it('clamps what it is given', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		const arrow = createArrow({ from: a, to: b })
+
+		setRelationGravity(editor, [arrow], 12)
+
+		expect(only().gravity).toBe(1)
+	})
+
+	it('is one undo step', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		const arrow = createArrow({ from: a, to: b, gravity: 1 })
+
+		setRelationGravity(editor, [arrow], 0.1)
+		expect(only().gravity).toBe(0.1)
+
+		editor.undo()
+
+		expect(only().gravity).toBe(1)
+	})
+
+	it('refuses a plain arrow', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		const decoration = createArrow({ from: a, to: b, isRelation: false })
+
+		expect(setRelationGravity(editor, [decoration], 0.5)).toBe(0)
+		expect(editor.getShape(decoration)?.meta[RELATION_GRAVITY_META_KEY]).toBeUndefined()
+	})
+
+	it('refuses a post-it, and a shape that is gone', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		const arrow = createArrow({ from: a, to: b })
+		editor.deleteShapes([arrow])
+
+		expect(setRelationGravity(editor, [a, arrow], 0.5)).toBe(0)
+	})
+
+	it('sets several at once', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		const c = createPostIt('c', 0, 600)
+		const first = createArrow({ from: a, to: b })
+		const second = createArrow({ from: b, to: c })
+
+		expect(setRelationGravity(editor, [first, second], 0.5)).toBe(2)
+		expect(Object.values(relations()).map((relation) => relation.gravity)).toEqual([0.5, 0.5])
+	})
+})
+
+describe('selectedRelationArrowIds', () => {
+	it('is the relation arrows in the selection, and nothing else', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		const arrow = createArrow({ from: a, to: b })
+		const decoration = createArrow({ from: a, to: b, isRelation: false })
+
+		editor.select(a, arrow, decoration)
+
+		expect(selectedRelationArrowIds(editor)).toEqual([arrow])
+	})
+
+	it('is empty with nothing selected', () => {
+		createPostIt('a', 0, 0)
+		editor.selectNone()
+
+		expect(selectedRelationArrowIds(editor)).toEqual([])
+	})
+})
+
 describe('relations and spatialContext stay independent', () => {
 	it('a relation creates no influence', () => {
 		const a = createPostIt('a', 0, 0)
@@ -257,6 +408,50 @@ describe('relations and spatialContext stay independent', () => {
 
 		expect(Object.keys(document.relations)).toHaveLength(1)
 		expect(document.spatialContext.influences.every((row) => row.influence === 0)).toBe(true)
+	})
+
+	/**
+	 * The case the whole separation exists for: far apart, and explicitly related
+	 * anyway. Both numbers are reported, neither is corrected by the other, and no
+	 * third number combining them is produced.
+	 */
+	it('reports a strong relation between two barely-influencing nodes', () => {
+		const node = (id: string, x: number) =>
+			editor.createShape({
+				...nodeToShape(createPostItNode({ id, x, y: 0, radius: 500 })),
+				parentId: editor.getCurrentPageId(),
+			})
+		node('a', 0)
+		node('b', 484)
+
+		const arrow = createArrow({ from: nodeIdToShapeId('b'), to: nodeIdToShapeId('a') })
+		setRelationGravity(editor, [arrow], 1)
+
+		const document = getCanvasDocument(editor)
+		const spatial = document.spatialContext.influences.find(
+			(row) => row.source === 'b' && row.target === 'a'
+		)
+
+		expect(spatial?.influence).toBeLessThan(0.1)
+		expect(spatial?.influence).toBeGreaterThan(0)
+		expect(only()).toMatchObject({ from: 'b', to: 'a', gravity: 1 })
+
+		// No blended value anywhere: the reader gets both signals, unmixed.
+		expect(JSON.stringify(document)).not.toContain('effectiveInfluence')
+	})
+
+	/** Spatial influence is symmetric in existence; an explicit relation is not. */
+	it('does not invent the reverse relation', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		createArrow({ from: b, to: a })
+
+		const document = getCanvasDocument(editor)
+
+		expect(Object.values(document.relations)).toHaveLength(1)
+		expect(
+			document.spatialContext.influences.some((row) => row.source === 'a' && row.target === 'b')
+		).toBe(true)
 	})
 
 	it('proximity creates no relation', () => {
@@ -297,6 +492,50 @@ describe('createRelations — rebuilding from canonical JSON', () => {
 		expect(reimport(before)).toBe(1)
 
 		expect(relations()).toEqual(before.relations)
+	})
+
+	it('round-trips gravity', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		createArrow({ from: a, to: b, gravity: 0.35 })
+
+		reimport(getCanvasDocument(editor))
+
+		expect(only().gravity).toBe(0.35)
+	})
+
+	/**
+	 * A document is typed by assertion only, so `createRelations` is the boundary
+	 * that has to hold: a junk gravity becomes the default rather than reaching the
+	 * store, and a `gravity` of `0` is honoured rather than being read as absent.
+	 */
+	it('sanitises the gravity it is given', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		createArrow({ from: a, to: b })
+
+		const document = getCanvasDocument(editor)
+		const id = Object.keys(document.relations)[0]
+
+		expect(
+			reimport({
+				...document,
+				relations: {
+					[id]: { ...document.relations[id], gravity: 9 as number },
+				},
+			})
+		).toBe(1)
+		expect(only().gravity).toBe(1)
+	})
+
+	it('honours a gravity of zero across the round trip', () => {
+		const a = createPostIt('a', 0, 0)
+		const b = createPostIt('b', 600, 0)
+		createArrow({ from: a, to: b, gravity: 0 })
+
+		reimport(getCanvasDocument(editor))
+
+		expect(only().gravity).toBe(0)
 	})
 
 	it('round-trips an unlabelled relation without inventing a type', () => {
@@ -346,7 +585,7 @@ describe('createRelations — rebuilding from canonical JSON', () => {
 			...document,
 			relations: {
 				...document.relations,
-				ghost: { id: 'ghost', from: 'a', to: 'nobody' },
+				ghost: { id: 'ghost', from: 'a', to: 'nobody', gravity: 1 },
 			},
 		}
 

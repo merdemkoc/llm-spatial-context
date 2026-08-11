@@ -1,6 +1,7 @@
 /**
  * The grounded screenshot: a PNG of the canvas with every canonical Node
- * outlined and labelled, plus the JSON that says which label is which node.
+ * outlined and labelled and every relation's gravity written on it, plus the JSON
+ * that says which label is which node.
  *
  * The point is to give a model a third way to reach the same entity. It already
  * has the semantic one (`content.text`) and the spatial one (`spatial`, plus the
@@ -20,8 +21,9 @@ import {
 	GROUNDING_PADDING,
 	drawGroundingLayer,
 	type Annotation,
+	type RelationAnnotation,
 } from '@/canvas/grounding/annotationLayer'
-import { buildGrounding, groundedDocument } from '@/canvas/grounding/grounding'
+import { buildGrounding, groundedDocument, relationAnnotations } from '@/canvas/grounding/grounding'
 import { groundingProjection, imageScale, nodeImageQuad } from '@/canvas/grounding/projection'
 import { assignVisualIds } from '@/canvas/grounding/visualId'
 
@@ -78,11 +80,22 @@ export async function buildGroundedScreenshot(editor: Editor): Promise<GroundedS
 			quad: nodeImageQuad(node, projection, scale),
 		}))
 
+		// The arrows are already in the image — they are canvas content — so what the
+		// layer adds is which of the JSON's relations each one is, and at what
+		// strength. Read from the document rather than from the arrow shapes, so the
+		// badge and the `relations` block cannot say different numbers.
+		const relations: RelationAnnotation[] = relationAnnotations(
+			canvas.relations,
+			canvas.nodes,
+			projection,
+			scale
+		)
+
 		// `bitmap` is the image both halves describe: the annotations are drawn onto
 		// it, and `grounding.image` reports its dimensions, so a bbox in the JSON is
 		// in the same pixel space as the outline in the PNG.
 		return {
-			png: await composite(bitmap, annotations, scale),
+			png: await composite(bitmap, annotations, scale, relations),
 			document: groundedDocument(canvas, buildGrounding(labelled, projection, bitmap)),
 		}
 	} finally {
@@ -103,7 +116,8 @@ export async function exportGroundedScreenshot(editor: Editor): Promise<void> {
 async function composite(
 	bitmap: ImageBitmap,
 	annotations: Annotation[],
-	scale: number
+	scale: number,
+	relations: RelationAnnotation[]
 ): Promise<Blob> {
 	const target = window.document.createElement('canvas')
 	target.width = bitmap.width
@@ -113,7 +127,7 @@ async function composite(
 	if (!ctx) throw new Error('Could not get a 2D context to draw the grounding layer')
 
 	ctx.drawImage(bitmap, 0, 0)
-	drawGroundingLayer(ctx, annotations, scale)
+	drawGroundingLayer(ctx, annotations, scale, relations)
 
 	return toBlob(target)
 }

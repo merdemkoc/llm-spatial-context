@@ -15,6 +15,7 @@ import {
 	nodeCorners,
 	nodeImageAabb,
 	nodeImageQuad,
+	relationImagePoint,
 	toImagePoint,
 } from '@/canvas/grounding/projection'
 
@@ -115,6 +116,48 @@ describe('toImagePoint', () => {
 
 	it('puts the far corner at the far corner of the image', () => {
 		expect(toImagePoint({ x: 680, y: 500 }, projection, 2)).toEqual({ x: 1440, y: 1080 })
+	})
+})
+
+describe('relationImagePoint', () => {
+	const projection = { minX: 0, minY: 0, width: 1000, height: 1000 }
+
+	it('is the midpoint of the two nodes’ centres, in image pixels', () => {
+		const from = node({ id: 'a', x: 0, y: 0, width: 200, height: 100 })
+		const to = node({ id: 'b', x: 400, y: 300, width: 200, height: 100 })
+
+		// Centres are (100, 50) and (500, 350); their midpoint is (300, 200).
+		expect(relationImagePoint(from, to, projection, 2)).toEqual({ x: 600, y: 400 })
+	})
+
+	/** Symmetric: which end the arrow starts at is a fact about the relation, not the badge. */
+	it('is the same point in either direction', () => {
+		const from = node({ id: 'a', x: 0, y: 0 })
+		const to = node({ id: 'b', x: 900, y: 400 })
+
+		expect(relationImagePoint(from, to, projection, 2)).toEqual(
+			relationImagePoint(to, from, projection, 2)
+		)
+	})
+
+	/** Rotation moves a node's centre, so the midpoint has to follow it there. */
+	it('follows a rotated node’s real centre', () => {
+		const from = node({ id: 'a', x: 0, y: 0, width: 200, height: 100, rotation: Math.PI / 2 })
+		const to = node({ id: 'b', x: 0, y: 0, width: 200, height: 100, rotation: Math.PI / 2 })
+
+		expect(relationImagePoint(from, to, projection, 1)).toEqual(
+			toImagePoint(nodeCenter(from), projection, 1)
+		)
+	})
+
+	it('places it where the projection and scale say, not in world units', () => {
+		const from = node({ id: 'a', x: 100, y: 100, width: 100, height: 100 })
+		const to = node({ id: 'b', x: 300, y: 100, width: 100, height: 100 })
+
+		// Midpoint of the centres is (250, 150); the projection's origin is at (100, 100).
+		expect(
+			relationImagePoint(from, to, { minX: 100, minY: 100, width: 400, height: 400 }, 3)
+		).toEqual({ x: 450, y: 150 })
 	})
 })
 

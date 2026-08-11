@@ -15,14 +15,27 @@
  * instead of in it.
  */
 import { beforeEach, describe, expect, it } from 'vitest'
-import { createTLStore, defaultBindingUtils, defaultShapeUtils, defaultTools, Editor } from 'tldraw'
+import {
+	createShapeId,
+	createTLStore,
+	defaultBindingUtils,
+	defaultShapeUtils,
+	defaultTools,
+	Editor,
+} from 'tldraw'
 import { createPostItNode } from '@/domain'
 import { PostItShapeUtil } from '@/canvas/shapes/PostItShapeUtil'
 import { nodeToShape } from '@/canvas/adapter/adapter'
 import { getCanvasDocument } from '@/canvas/adapter/canvasView'
+import { nodeIdToShapeId } from '@/canvas/adapter/ids'
 import { registerNodeMetadata } from '@/canvas/adapter/metadata'
+import {
+	ARROW_SHAPE_TYPE,
+	RELATION_GRAVITY_META_KEY,
+	RELATION_META_KEY,
+} from '@/canvas/adapter/relations'
 import { GROUNDING_PADDING } from '@/canvas/grounding/annotationLayer'
-import { buildGrounding, groundedDocument } from '@/canvas/grounding/grounding'
+import { buildGrounding, groundedDocument, relationAnnotations } from '@/canvas/grounding/grounding'
 import { groundingProjection } from '@/canvas/grounding/projection'
 import { assignVisualIds } from '@/canvas/grounding/visualId'
 
@@ -163,5 +176,82 @@ describe('the grounded document', () => {
 
 	it('grounds nothing on an empty canvas', () => {
 		expect(grounded().grounding.nodes).toEqual({})
+	})
+})
+
+describe('relation badges over a real document', () => {
+	/** An arrow bound at both ends, as the Relation tool leaves one. */
+	function createRelationArrow(from: string, to: string, gravity?: number) {
+		const id = createShapeId()
+
+		editor.createShape({
+			id,
+			type: ARROW_SHAPE_TYPE,
+			parentId: editor.getCurrentPageId(),
+			meta: {
+				[RELATION_META_KEY]: true,
+				...(gravity === undefined ? {} : { [RELATION_GRAVITY_META_KEY]: gravity }),
+			},
+		})
+
+		editor.createBindings(
+			(['start', 'end'] as const).map((terminal) => ({
+				type: ARROW_SHAPE_TYPE,
+				fromId: id,
+				toId: nodeIdToShapeId(terminal === 'start' ? from : to),
+				props: {
+					terminal,
+					normalizedAnchor: { x: 0.5, y: 0.5 },
+					isExact: false,
+					isPrecise: false,
+				},
+			}))
+		)
+	}
+
+	/** The badges the export would draw, from the same document it would draw them for. */
+	function badges() {
+		const canvas = grounded()
+		const projection = groundingProjection(Object.values(canvas.nodes), GROUNDING_PADDING)
+
+		return relationAnnotations(canvas.relations, canvas.nodes, projection, EXPORT_SCALE)
+	}
+
+	it('labels the relation the document reports, at the strength it reports', () => {
+		createPostIt('a', 0, 0)
+		createPostIt('b', 900, 400)
+		createRelationArrow('a', 'b', 0.35)
+
+		expect(badges()).toEqual([{ label: 'g 0.35', at: expect.anything() }])
+	})
+
+	/**
+	 * The sibling of "keeps every bbox inside the image": a badge outside the PNG is
+	 * a claim nobody can see. It holds by construction — a midpoint between two nodes
+	 * is inside the box that contains them — and this is what keeps it true.
+	 */
+	it('keeps every badge inside the image', () => {
+		createPostIt('a', 0, 0)
+		createPostIt('b', 700, 300)
+		createPostIt('c', -300, 500)
+		createRelationArrow('a', 'b')
+		createRelationArrow('c', 'b')
+
+		const { grounding } = grounded()
+
+		expect(badges()).toHaveLength(2)
+		for (const { at } of badges()) {
+			expect(at.x).toBeGreaterThanOrEqual(0)
+			expect(at.y).toBeGreaterThanOrEqual(0)
+			expect(at.x).toBeLessThanOrEqual(grounding.image.width)
+			expect(at.y).toBeLessThanOrEqual(grounding.image.height)
+		}
+	})
+
+	it('has nothing to label when the user drew no relations', () => {
+		createPostIt('a', 0, 0)
+		createPostIt('b', 900, 400)
+
+		expect(badges()).toEqual([])
 	})
 })

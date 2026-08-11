@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import type { TLShape } from 'tldraw'
-import { isRelationArrow, relationType } from '@/canvas/adapter/relations'
+import { isRelationArrow, relationGravity, relationType } from '@/canvas/adapter/relations'
 import { plainTextToRichText } from '@/canvas/adapter/richText'
 import { POST_IT_SHAPE_TYPE } from '@/canvas/shapes/postItShape'
 
@@ -72,5 +72,37 @@ describe('relationType', () => {
 
 	it('keeps a multi-word label intact', () => {
 		expect(relationType(arrow('leads to'))).toBe('leads to')
+	})
+})
+
+describe('relationGravity', () => {
+	it('is the value stored on the arrow', () => {
+		expect(relationGravity(arrow(undefined, { relation: true, gravity: 0.35 }))).toBe(0.35)
+		expect(relationGravity(arrow(undefined, { relation: true, gravity: 0 }))).toBe(0)
+	})
+
+	/**
+	 * An arrow drawn before gravity existed is still a relation the user drew, and
+	 * drawing it is what the default means. This is what keeps an old canvas — or an
+	 * imported document written against the previous schema — readable.
+	 */
+	it('is the full-strength default when the arrow carries none', () => {
+		expect(relationGravity(arrow())).toBe(1)
+	})
+
+	/** `meta` is unvalidated JSON, so a nonsense value is read as defensively as the flag. */
+	it('ignores a stored value that is not a usable number', () => {
+		expect(relationGravity(arrow(undefined, { relation: true, gravity: '0.5' }))).toBe(1)
+		expect(relationGravity(arrow(undefined, { relation: true, gravity: null }))).toBe(1)
+	})
+
+	it('clamps a stored value into 0–1', () => {
+		expect(relationGravity(arrow(undefined, { relation: true, gravity: 5 }))).toBe(1)
+		expect(relationGravity(arrow(undefined, { relation: true, gravity: -2 }))).toBe(0)
+	})
+
+	/** The one thing it must never do: notice how the arrow is drawn. */
+	it('is unaffected by the arrow’s label', () => {
+		expect(relationGravity(arrow('causes', { relation: true, gravity: 0.2 }))).toBe(0.2)
 	})
 })
