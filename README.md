@@ -1,6 +1,29 @@
 # llm-spatial-context
 
-A prototyping boilerplate for building on the [tldraw](https://tldraw.dev) infinite canvas, with Vite, React 19 and TypeScript.
+An experiment in giving an LLM **grounded spatial context** about a [tldraw](https://tldraw.dev) infinite canvas. A canonical model describes _what exists_ on the canvas — nodes, their geometry, and what the user explicitly connected — across four deliberately-separated layers, so a reader (a person or a model) can reach the same entity **semantically** (its text), **spatially** (where it sits and what its field reaches), **relationally** (what the user connected and named), and **visually** (which pixels of a screenshot it occupies). Derived data is never stored, and proximity never silently becomes a relation.
+
+Built on tldraw, Vite, React 19 and TypeScript.
+
+![The canvas with contextual-field overlays, influence badges, and the live canonical-JSON inspector](docs/images/inspector-hero.png)
+
+## Contents
+
+- [Getting started](#getting-started)
+- [Scripts](#scripts)
+- [Architecture](#architecture)
+  - [Contextual field](#contextual-field)
+  - [Four layers of context](#four-layers-of-context)
+  - [Relations](#relations)
+  - [Grounded screenshot](#grounded-screenshot)
+- [Layout](#layout)
+- [Where to add things](#where-to-add-things)
+- [Known limitations](#known-limitations)
+- [Testing](#testing)
+- [Persistence](#persistence)
+- [A note on the tldraw license](#a-note-on-the-tldraw-license)
+- [Docs](#docs)
+
+For a file-by-file map of the code — every module, its key exports, and the test layout — see [`CODEMAP.md`](./CODEMAP.md).
 
 ## Getting started
 
@@ -15,18 +38,18 @@ Open http://localhost:5173.
 
 ## Scripts
 
-| Script                 | Does                                        |
-| ---------------------- | ------------------------------------------- |
-| `npm run dev`          | Vite dev server with HMR                    |
-| `npm run build`        | Typecheck, then production build to `dist/` |
-| `npm run preview`      | Serve the production build locally          |
-| `npm run typecheck`    | `tsc --noEmit`                              |
-| `npm test`             | Vitest, single run                          |
-| `npm run test:watch`   | Vitest in watch mode                        |
-| `npm run lint`         | ESLint over the repo                        |
-| `npm run lint:fix`     | ESLint with autofix                         |
-| `npm run format`       | Prettier write                              |
-| `npm run format:check` | Prettier check (no writes)                  |
+| Script                 | Does                                                 |
+| ---------------------- | ---------------------------------------------------- |
+| `npm run dev`          | Vite dev server with HMR (`--host`, also on the LAN) |
+| `npm run build`        | Typecheck, then production build to `dist/`          |
+| `npm run preview`      | Serve the production build locally                   |
+| `npm run typecheck`    | `tsc --noEmit`                                       |
+| `npm test`             | Vitest, single run                                   |
+| `npm run test:watch`   | Vitest in watch mode                                 |
+| `npm run lint`         | ESLint over the repo                                 |
+| `npm run lint:fix`     | ESLint with autofix                                  |
+| `npm run format`       | Prettier write                                       |
+| `npm run format:check` | Prettier check (no writes)                           |
 
 ## Architecture
 
@@ -57,6 +80,8 @@ Two details worth knowing:
 
 The field was the one piece of spatial state with no visual form — set as a number, read back as numbers, so "does this note reach that one?" meant comparing a distance column against a radius by hand. The **Contextual fields** switch (top right, beside _Canonical JSON_) draws it: a dashed circle per Node that has a radius, every one at once, so overlapping reach is something you see rather than compute.
 
+![Two post-its with contextual fields drawn as overlapping dashed reach circles](docs/images/contextual-field-overlay.png)
+
 Selecting a Node **highlights its field**: a solid ring instead of a dashed one, a denser fill, and drawn last so no other circle's translucent fill washes over its outline. Solid-versus-dashed is a difference in _kind_ rather than only in degree, which is what keeps the highlight legible once you zoom out far enough that every outline is a hairline. With several Nodes selected, each of their fields is highlighted.
 
 The overlay is a viewing aid and nothing else. It reads the canonical model, writes nothing, and infers nothing — no lines between Nodes, no distance labels, no shading of intersections. Overlap shows because translucent circles overlap.
@@ -78,6 +103,8 @@ Selecting a single Node also badges every Node it is spatially related to with t
 ← 0.375     how much this one reaches the selected Node
 500 u       centre-to-centre distance — symmetric, so stated once
 ```
+
+![The selected post-it, with each in-range note badged by its incoming and outgoing influence and the distance between them](docs/images/influence-badges.png)
 
 Both numbers appear even when one is `0.000`, because that zero is information: "its field reaches you, yours doesn't reach it" is a real and easily-missed state. It is the same reasoning that keeps out-of-range rows in `spatialContext` rather than dropping them. A Node out of range _both_ ways gets no badge at all — it isn't affected, and a canvas of zeroes would bury the pairs that carry a signal.
 
@@ -159,6 +186,8 @@ The other three layers speak in canvas coordinates — they say where a Node is 
 
 `grounding` closes that gap, and the **Grounded screenshot** button in the Inspector panel exports the image it describes: a PNG of the canvas with every Node outlined and labelled `N1`, `N2`, `N3`.
 
+![The exported PNG — each post-it outlined in pink and labelled N1, N2, N3, with the contextual-field overlay deliberately absent](docs/images/grounded-screenshot.png)
+
 ```json
 "grounding": {
 	"image": { "width": 1440, "height": 1477 },
@@ -198,6 +227,7 @@ src/
     canvas.ts                  CanvasDocument — the four layers
     grounding.ts               Grounding types — screenshot pixels, not canvas units
     spatialInfluence.ts        Node centre, distance, influence, buildSpatialContext
+    index.ts                   Barrel — the @/domain import surface
   canvas/
     Canvas.tsx                 The <Tldraw /> wrapper — persistence, onMount hook
     config.tsx                 Module-scope shape utils, tools, UI overrides and toolbar
@@ -234,6 +264,8 @@ src/
 Imports resolve `@/` to `src/`, e.g. `import { Canvas } from '@/canvas/Canvas'`.
 
 **`src/domain` must never import tldraw.** That's the whole point of the split, so ESLint enforces it rather than leaving it to code review.
+
+Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are left out of the tree above for brevity. For the full file-by-file map — every module, its key exports, and the three test layers — see [`CODEMAP.md`](./CODEMAP.md).
 
 ## Where to add things
 
