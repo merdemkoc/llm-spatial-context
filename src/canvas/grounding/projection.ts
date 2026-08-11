@@ -77,16 +77,6 @@ export function groundingProjection(nodes: CanvasNode[], padding: number): Groun
 }
 
 /**
- * The largest misalignment, in image pixels, tolerated between the two axes.
- *
- * Expressed as a pixel budget rather than a bare epsilon because that is the
- * thing anyone cares about: a whole pixel of drift across the longest edge of
- * the image is invisible, and anything more means the image is not the rectangle
- * that was requested.
- */
-const SCALE_TOLERANCE_PX = 1
-
-/**
  * Pixels per world unit, measured from the decoded image.
  *
  * Deliberately not the `scale` that was requested. tldraw multiplies by `scale`,
@@ -94,8 +84,15 @@ const SCALE_TOLERANCE_PX = 1
  * maximum canvas size — so the requested number is not the number that came out.
  * Measuring absorbs all four.
  *
- * Throws rather than guessing when the image doesn't match the projection. A
- * misaligned box is worse than no box: it points confidently at the wrong node.
+ * Throws rather than guessing when the image isn't the rectangle that was asked
+ * for — trimmed, or clamped on one axis only. A misaligned box is worse than no
+ * box: it points confidently at the wrong node.
+ *
+ * The check is "does the height follow from the width", in pixels, rather than
+ * "do the two implied scales agree". The two axes are floored independently, so
+ * the scales *never* quite agree, and the size of that disagreement grows with
+ * the aspect ratio — comparing them against a fixed budget rejects a wide canvas
+ * for being wide.
  */
 export function imageScale(
 	projection: GroundingProjection,
@@ -106,13 +103,18 @@ export function imageScale(
 	}
 
 	const horizontal = image.width / projection.width
-	const vertical = image.height / projection.height
 
-	const drift = Math.abs(horizontal - vertical) * Math.max(projection.width, projection.height)
-	if (drift > SCALE_TOLERANCE_PX) {
+	// Flooring costs each axis up to a whole pixel. On the height that is 1px
+	// directly; the width's own lost pixel arrives here multiplied by the aspect
+	// ratio, since it shifts the scale the height is predicted from.
+	const slack = 1 + projection.height / projection.width
+	const expectedHeight = projection.height * horizontal
+
+	if (Math.abs(image.height - expectedHeight) > slack) {
 		throw new Error(
-			`Exported image is ${image.width}×${image.height}px, which is not the requested ` +
-				`bounds of ${projection.width}×${projection.height} world units at any single scale`
+			`Exported image is ${image.width}×${image.height}px, but ${image.width}px wide over ` +
+				`${projection.width} world units implies a height of ${Math.round(expectedHeight)}px, ` +
+				`not ${image.height}px — the image is not the rectangle that was requested`
 		)
 	}
 
@@ -134,4 +136,29 @@ export function nodeImageQuad(
 	scale: number
 ): Point[] {
 	return nodeCorners(node).map((corner) => toImagePoint(corner, projection, scale))
+}
+
+/**
+ * `[x1, y1, x2, y2]` in image pixels — the top-left and bottom-right of the
+ * node's axis-aligned bounding box.
+ *
+ * Corners rather than `[x, y, width, height]`, and the difference matters to
+ * anyone reading the JSON: the last two numbers are absolute positions in the
+ * image, not extents.
+ *
+ * For a rotated node this is *looser* than the outline drawn on the image, which
+ * follows the rotation. Four numbers can't express a rotation, so the bbox is the
+ * smallest axis-aligned box containing the node; a test pins it to the drawn
+ * quad's corners so the two can't disagree about which node they describe.
+ */
+export function nodeImageAabb(
+	node: CanvasNode,
+	projection: GroundingProjection,
+	scale: number
+): [number, number, number, number] {
+	const quad = nodeImageQuad(node, projection, scale)
+	const xs = quad.map((corner) => corner.x)
+	const ys = quad.map((corner) => corner.y)
+
+	return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]
 }

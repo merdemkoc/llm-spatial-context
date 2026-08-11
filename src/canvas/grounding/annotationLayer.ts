@@ -14,8 +14,7 @@
  * Every size below is in design units multiplied by the image scale, so
  * annotations stay proportionate whatever pixel ratio the export ends up at.
  */
-import type { Point } from '@/domain'
-import type { VisualId } from '@/canvas/grounding/visualId'
+import type { Point, VisualId } from '@/domain'
 
 /**
  * A structural subset of `CanvasRenderingContext2D` — a real 2D context

@@ -11,10 +11,7 @@
  * whatever order `nodes` happened to be in, and `Record` iteration order is not
  * something the canonical document promises.
  */
-import { nodeCenter, type CanvasNode } from '@/domain'
-
-/** `N1`, `N2`, … One-indexed, contiguous, in reading order. */
-export type VisualId = string
+import { nodeCenter, type CanvasNode, type VisualId } from '@/domain'
 
 export interface GroundedNode {
 	visualId: VisualId

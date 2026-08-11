@@ -8,49 +8,31 @@
  * belong to which id, and inferring that from coordinates is exactly the guess
  * this project exists to remove.
  *
- * `grounding` is an **export concern, not a canonical layer**. It says nothing
- * about the canvas — only about one image of it — and labels renumber whenever
- * the layout changes, so it has no business in `CanvasDocument`. It rides along
- * in the artifact instead, as a superset the Inspector's import still accepts.
- *
- * Everything that can be wrong about where a box lands lives in `projection.ts`
- * and `annotationLayer.ts`, which are pure and tested. What's left here is the
- * browser: rasterising, compositing and saving.
+ * What the layer means, and why `grounding` is not part of `CanvasDocument`, is
+ * in `grounding.ts`. Everything that can be wrong about where a box lands lives
+ * there and in `projection.ts`, which are pure and tested. What's left here is
+ * the browser: rasterising, compositing and saving.
  */
 import { Box, type Editor } from 'tldraw'
-import type { CanvasDocument, NodeId } from '@/domain'
+import type { CanvasDocument } from '@/domain'
 import { getCanvasDocument } from '@/canvas/adapter/canvasView'
 import {
 	GROUNDING_PADDING,
 	drawGroundingLayer,
 	type Annotation,
 } from '@/canvas/grounding/annotationLayer'
+import { buildGrounding, groundedDocument } from '@/canvas/grounding/grounding'
 import { groundingProjection, imageScale, nodeImageQuad } from '@/canvas/grounding/projection'
-import { assignVisualIds, type GroundedNode, type VisualId } from '@/canvas/grounding/visualId'
-
-/** Visual id → canonical node id. The one explicit statement of correspondence. */
-export type Grounding = Record<VisualId, NodeId>
-
-export type GroundedCanvasDocument = CanvasDocument & { grounding: Grounding }
+import { assignVisualIds } from '@/canvas/grounding/visualId'
 
 export interface GroundedScreenshot {
 	png: Blob
-	document: GroundedCanvasDocument
-}
 
-/**
- * The canonical document, plus the map. Pure — the labels come from node
- * geometry alone, so this is the same map the image is drawn with.
- */
-export function groundedDocument(canvas: CanvasDocument): GroundedCanvasDocument {
-	return withGrounding(canvas, assignVisualIds(Object.values(canvas.nodes)))
-}
-
-function withGrounding(canvas: CanvasDocument, labelled: GroundedNode[]): GroundedCanvasDocument {
-	const grounding: Grounding = {}
-	for (const { visualId, node } of labelled) grounding[visualId] = node.id
-
-	return { ...canvas, grounding }
+	/**
+	 * The canonical document with its derived `grounding` replaced by one measured
+	 * from `png`, so the pair always describes itself rather than a prediction.
+	 */
+	document: CanvasDocument
 }
 
 /**
@@ -96,9 +78,12 @@ export async function buildGroundedScreenshot(editor: Editor): Promise<GroundedS
 			quad: nodeImageQuad(node, projection, scale),
 		}))
 
+		// `bitmap` is the image both halves describe: the annotations are drawn onto
+		// it, and `grounding.image` reports its dimensions, so a bbox in the JSON is
+		// in the same pixel space as the outline in the PNG.
 		return {
 			png: await composite(bitmap, annotations, scale),
-			document: withGrounding(canvas, labelled),
+			document: groundedDocument(canvas, buildGrounding(labelled, projection, bitmap)),
 		}
 	} finally {
 		bitmap.close()

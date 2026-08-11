@@ -13,6 +13,7 @@ import {
 	groundingProjection,
 	imageScale,
 	nodeCorners,
+	nodeImageAabb,
 	nodeImageQuad,
 	toImagePoint,
 } from '@/canvas/grounding/projection'
@@ -132,12 +133,41 @@ describe('imageScale', () => {
 	})
 
 	/**
+	 * Regression. These are the numbers off a real canvas: 1101.42578125 ×
+	 * 497.99609375 floors to 2202 × 995, implying scales of 1.99923 and 1.99800.
+	 *
+	 * The flooring error each axis contributes is up to a whole pixel, so the
+	 * *difference between the two scales* is bounded by `1 / min(width, height)` —
+	 * which means any budget expressed against the longest edge is really a budget
+	 * of one aspect ratio. A fixed pixel budget rejected this 2.2:1 canvas while
+	 * happily accepting a square one.
+	 */
+	it('accepts a wide image whose two axes floored differently', () => {
+		const wide = { minX: 0, minY: 0, width: 1101.42578125, height: 497.99609375 }
+
+		expect(imageScale(wide, { width: 2202, height: 995 })).toBeCloseTo(1.9992, 3)
+	})
+
+	it('accepts a tall image whose two axes floored differently', () => {
+		const tall = { minX: 0, minY: 0, width: 497.99609375, height: 1101.42578125 }
+
+		expect(imageScale(tall, { width: 995, height: 2202 })).toBeCloseTo(1.998, 3)
+	})
+
+	/**
 	 * A misaligned box is worse than no box: it would confidently point at the
 	 * wrong pixels. If the image isn't the rectangle that was asked for — trimmed
 	 * or clamped — there is no scale that makes the boxes correct.
 	 */
 	it('refuses an image whose aspect ratio is not the projection’s', () => {
-		expect(() => imageScale(projection, { width: 1440, height: 540 })).toThrow(/bounds/i)
+		expect(() => imageScale(projection, { width: 1440, height: 540 })).toThrow(
+			/not the rectangle that was requested/i
+		)
+	})
+
+	/** Uniform clamping keeps the aspect, so it is a smaller scale, not an error. */
+	it('accepts an image the browser clamped down on both axes', () => {
+		expect(imageScale(projection, { width: 720, height: 540 })).toBe(1)
 	})
 
 	it('refuses a projection with no area', () => {
@@ -169,6 +199,62 @@ describe('nodeImageQuad', () => {
 			expect(corner.y).toBeGreaterThanOrEqual(0)
 			expect(corner.x).toBeLessThanOrEqual(projection.width * scale)
 			expect(corner.y).toBeLessThanOrEqual(projection.height * scale)
+		}
+	})
+})
+
+describe('nodeImageAabb', () => {
+	it('is the node’s scaled rect in image space when it is not rotated', () => {
+		const unrotated = node({ x: 100, y: 100 })
+		const projection = groundingProjection([unrotated], 20)
+
+		expect(nodeImageAabb(unrotated, projection, 2)).toEqual([40, 40, 520, 360])
+	})
+
+	/**
+	 * Four numbers cannot express a rotation, so for a rotated node the bbox is
+	 * the axis-aligned box *containing* it — looser than the outline drawn on the
+	 * image, which follows the rotation. Here the whole projection is exactly the
+	 * rotated node's extent, so the bbox is the whole image.
+	 */
+	it('contains the whole rotated node', () => {
+		const rotated = node({ width: 240, height: 160, rotation: Math.PI / 6 })
+		const projection = groundingProjection([rotated], 0)
+
+		const [x1, y1, x2, y2] = nodeImageAabb(rotated, projection, 2)
+
+		expect([x1, y1]).toEqual([0, 0])
+		expect(x2).toBeCloseTo(projection.width * 2)
+		expect(y2).toBeCloseTo(projection.height * 2)
+	})
+
+	it('never reports a reversed box', () => {
+		const rotated = node({ rotation: (Math.PI * 5) / 4 })
+		const projection = groundingProjection([rotated], 10)
+
+		const [x1, y1, x2, y2] = nodeImageAabb(rotated, projection, 2)
+
+		expect(x2).toBeGreaterThan(x1)
+		expect(y2).toBeGreaterThan(y1)
+	})
+
+	/**
+	 * The bbox in the JSON and the outline in the image describe the same node, so
+	 * the one must contain the other. Pins them to each other rather than to two
+	 * separately-derived expectations.
+	 */
+	it('bounds every corner of the drawn outline', () => {
+		const rotated = node({ x: 220, y: -60, rotation: 0.9 })
+		const projection = groundingProjection([rotated, node({ id: 'b', x: -400, y: 300 })], 40)
+		const scale = 2.5
+
+		const [x1, y1, x2, y2] = nodeImageAabb(rotated, projection, scale)
+
+		for (const corner of nodeImageQuad(rotated, projection, scale)) {
+			expect(corner.x).toBeGreaterThanOrEqual(x1)
+			expect(corner.x).toBeLessThanOrEqual(x2)
+			expect(corner.y).toBeGreaterThanOrEqual(y1)
+			expect(corner.y).toBeLessThanOrEqual(y2)
 		}
 	})
 })

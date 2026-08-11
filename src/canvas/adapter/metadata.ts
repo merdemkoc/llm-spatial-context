@@ -7,7 +7,9 @@
  */
 import type { Editor, TLShape } from 'tldraw'
 import { POST_IT_SHAPE_TYPE } from '@/canvas/shapes/postItShape'
+import { RELATION_TOOL_ID } from '@/canvas/shapes/RelationTool'
 import { readNodeContextualField, writeNodeMeta } from '@/canvas/adapter/adapter'
+import { ARROW_SHAPE_TYPE, RELATION_META_KEY } from '@/canvas/adapter/relations'
 
 /**
  * Creation normally means "this node came into existence now", which is also
@@ -33,6 +35,15 @@ export function restoringNodes<T>(fn: () => T): T {
 
 export function registerNodeMetadata(editor: Editor): () => void {
 	editor.getInitialMetaForShape = (shape) => {
+		// An arrow drawn with the Relation tool is a claim; the same arrow drawn with
+		// the arrow tool is decoration. Nothing about the shape itself distinguishes
+		// them, so the tool in use at creation is what does — read here, at the one
+		// moment it is knowable. `getCurrentToolId` reports the root tool, so it says
+		// `relation` while the tool's `pointing` child creates the shape.
+		if (shape.type === ARROW_SHAPE_TYPE) {
+			return editor.getCurrentToolId() === RELATION_TOOL_ID ? { [RELATION_META_KEY]: true } : {}
+		}
+
 		if (shape.type !== POST_IT_SHAPE_TYPE) return {}
 
 		const now = new Date().toISOString()

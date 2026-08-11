@@ -17,6 +17,7 @@ import type { CanvasDocument, CanvasNode, SpatialInfluence } from '@/domain'
 import { useCanvasDocument } from '@/canvas/adapter/canvasView'
 import { nodeToShape } from '@/canvas/adapter/adapter'
 import { restoringNodes } from '@/canvas/adapter/metadata'
+import { createRelations, isRelationArrow } from '@/canvas/adapter/relations'
 import { isPostItShape } from '@/canvas/shapes/postItShape'
 import { exportGroundedScreenshot } from '@/canvas/grounding/groundedExport'
 
@@ -73,9 +74,12 @@ export function InspectorPanel() {
 		editor.markHistoryStoppingPoint('import canvas')
 		editor.run(() =>
 			restoringNodes(() => {
+				// Relation arrows go too. Leaving them would strand every one of them:
+				// their bindings die with the notes they pointed at, so they'd persist as
+				// dangling lines describing nothing.
 				const existing = editor
 					.getCurrentPageShapes()
-					.filter(isPostItShape)
+					.filter((shape) => isPostItShape(shape) || isRelationArrow(shape))
 					.map((shape) => shape.id)
 
 				if (existing.length) editor.deleteShapes(existing)
@@ -84,6 +88,10 @@ export function InspectorPanel() {
 				editor.createShapes(
 					Object.values(parsed.nodes).map((node) => ({ ...nodeToShape(node), parentId: pageId }))
 				)
+
+				// After the nodes, necessarily: an arrow can only bind to shapes that
+				// already exist.
+				if (parsed.relations) createRelations(editor, parsed.relations, parsed.nodes)
 			})
 		)
 
