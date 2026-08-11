@@ -1,6 +1,6 @@
 # llm-spatial-context
 
-An experiment in giving an LLM **grounded spatial context** about a [tldraw](https://tldraw.dev) infinite canvas. A canonical model describes _what exists_ on the canvas — nodes, their geometry, and what the user explicitly connected — across four deliberately-separated layers, so a reader (a person or a model) can reach the same entity **semantically** (its text), **spatially** (where it sits and what its field reaches), **relationally** (what the user connected and named), and **visually** (which pixels of a screenshot it occupies). Derived data is never stored, and proximity never silently becomes a relation.
+An experiment in giving an LLM **grounded spatial context** about a [tldraw](https://tldraw.dev) infinite canvas. A canonical model describes _what exists_ on the canvas — nodes, their geometry, and what the user explicitly connected — across four deliberately-separated layers, so a reader (a person or a model) can reach the same entity **semantically** (its text), **spatially** (where it sits and what its field reaches), **relationally** (what the user connected, named, and how strongly), and **visually** (which pixels of a screenshot it occupies). Derived data is never stored, proximity never silently becomes a relation, and the two strength signals — spatial influence and relational gravity — are never mixed into one number.
 
 Built on tldraw, Vite, React 19 and TypeScript.
 
@@ -15,6 +15,7 @@ Built on tldraw, Vite, React 19 and TypeScript.
   - [Contextual field](#contextual-field)
   - [Four layers of context](#four-layers-of-context)
   - [Relations](#relations)
+  - [Relational gravity](#relational-gravity)
   - [Grounded screenshot](#grounded-screenshot)
 - [Layout](#layout)
 - [Where to add things](#where-to-add-things)
@@ -179,7 +180,7 @@ A `CanvasDocument` deliberately separates what it knows about a canvas into four
 | --------------------------- | -------------------------------------------- | -------------------------------------------------------------- |
 | Node spatial state          | `nodes[].spatial`, `nodes[].contextualField` | Where is it, how big, how far does it reach?                   |
 | Spatially derived context   | `spatialContext.influences`                  | How far apart are they, how strongly does one reach the other? |
-| Explicit semantic relations | `relations`                                  | What did the user actually connect, and call it?               |
+| Explicit semantic relations | `relations`                                  | What did the user connect, call it, and how strongly?          |
 | Visual grounding            | `grounding`                                  | Which region of a screenshot is this node?                     |
 
 The first three speak in **canvas coordinates**; `grounding` speaks in **screenshot pixels**. That is why it is its own layer rather than extra fields on `spatial`.
@@ -189,7 +190,9 @@ The first three speak in **canvas coordinates**; `grounding` speaks in **screens
 	"nodes": {
 		"node-a": { "spatial": { "x": 300, "y": 200, "…": "…" }, "contextualField": { "radius": 500 } }
 	},
-	"relations": { "relation-1": { "from": "node-a", "to": "node-b", "type": "causes" } },
+	"relations": {
+		"relation-1": { "from": "node-a", "to": "node-b", "gravity": 1, "type": "causes" }
+	},
 	"spatialContext": {
 		"influences": [{ "source": "node-a", "target": "node-b", "distance": 326, "influence": 0.349 }]
 	},
@@ -200,7 +203,7 @@ The first three speak in **canvas coordinates**; `grounding` speaks in **screens
 }
 ```
 
-**Proximity never becomes a relation.** Nothing infers `related_to`, or any other type, from two Nodes being close. `relations` is what the user said; `spatialContext` is what the layout implies and nobody named. The reverse holds too: a relation between two distant Nodes creates no influence.
+**Proximity never becomes a relation.** Nothing infers `related_to`, or any other type, from two Nodes being close. `relations` is what the user said; `spatialContext` is what the layout implies and nobody named. The reverse holds too: a relation between two distant Nodes creates no influence, and its `gravity` is unmoved by how far apart they are.
 
 ### Relations
 
@@ -208,7 +211,13 @@ The **Relation** tool (`r`) draws an arrow from one post-it to another, and that
 
 ```json
 "relations": {
-	"sjWvRRvYRGPbJy9i9h44-": { "id": "sjWvRRvYRGPbJy9i9h44-", "from": "cdhJU…", "to": "QhEky…", "type": "causes" }
+	"sjWvRRvYRGPbJy9i9h44-": {
+		"id": "sjWvRRvYRGPbJy9i9h44-",
+		"from": "cdhJU…",
+		"to": "QhEky…",
+		"gravity": 1,
+		"type": "causes"
+	}
 }
 ```
 
@@ -229,6 +238,36 @@ Relations are **derived on read**, like everything else: `getCanvasRelations` wa
 
 Nothing in the projection looks at geometry, and nothing in `spatialInfluence.ts` looks at arrows. That is what keeps the two layers answering different questions.
 
+### Relational gravity
+
+A relation carries a **gravity**: how strongly the user says these two are related, `0`–`1`. It is a second strength signal, and the point of it is that it is _not_ the first one:
+
+```text
+Spatial influence   → what the arrangement suggests.
+Relational gravity  → what the user explicitly expressed.
+```
+
+Select a relation arrow and a **Relational gravity** input appears in the style panel. Drawing an arrow starts it at `1`.
+
+So both numbers can describe the same pair, and disagree:
+
+```text
+N4 → N1
+  distance:           484
+  spatial influence:  0.032   ← the layout barely connects them
+  relational gravity: 1.0     ← the user says they are strongly related
+```
+
+That is not an inconsistency to reconcile — it is the information. **No `effectiveInfluence` is computed**, and nothing blends the two, because collapsing them would destroy the only thing this model is trying to preserve: the difference between what the user _stated_ and what can be _inferred_ from how they arranged things. The Inspector shows them as two tables for the same reason.
+
+Gravity is **directional**, like the rest of the record: `from → to` at `1.0` says nothing about `to → from`, which exists only if the user drew that arrow too. Spatial influence stays symmetric in existence (every pair gets a row) and asymmetric in value (it depends on the source's radius).
+
+`gravity` is **required and defaulted**, where `type` is optional and never defaulted. That difference is deliberate: `type` is a _word the user chose_, and inventing one would invent the claim. Gravity is the strength of the _gesture itself_, and deliberately connecting two notes is the strongest assertion the tool offers — so `1` is what the act already meant, not a guess. `clampGravity` in `src/domain/canvas.ts` owns that reading: out-of-range values are clamped, junk falls back to `1`, and a deliberate `0` is kept, exactly as a `contextualField.radius` of `0` is.
+
+It lives in `shape.meta.gravity`, flat beside the `relation` flag rather than nested inside it — `meta.relation` has to stay exactly `true` for `isRelationArrow` to accept it, so nesting would turn every arrow already on a canvas into decoration. An arrow drawn before this field existed reads back at `1.0`.
+
+The schema stays minimal on purpose. No relation vocabulary (`explains`, `supports`, `contradicts`) yet: `from`, `to`, `gravity` and an optional user-typed `type` are what the canvas can honestly report today.
+
 `spatialContext` is assembled in `getCanvasDocument`, the one place a document is built, which is why it needs no invalidation logic and no manual trigger — a move, a resize, a radius change, an addition or a deletion all produce a fresh document. It is **output, not input**: importing a document ignores whatever `spatialContext` it carried and derives a new one from the Nodes.
 
 Every directed pair is emitted, including out-of-range ones at `influence: 0`, so "these are too far apart" stays distinguishable from "this pair wasn't considered". That is `N² − N` entries. Distance is rounded to whole units and influence to three decimals in the document; `calculateSpatialInfluences` stays exact for anything doing further arithmetic.
@@ -239,7 +278,7 @@ The other three layers speak in canvas coordinates — they say where a Node is 
 
 `grounding` closes that gap, and the **Grounded screenshot** button in the Inspector panel exports the image it describes: a PNG of the canvas with every Node outlined and labelled `N1`, `N2`, `N3`.
 
-![The exported PNG — each post-it outlined in pink and labelled N1, N2, N3, with the contextual-field overlay deliberately absent](docs/images/grounded-screenshot.png)
+![The exported PNG — each post-it outlined in pink and labelled N1, N2, N3, the relation arrow badged with its gravity, and the contextual-field overlay deliberately absent](docs/images/grounded-screenshot.png)
 
 ```json
 "grounding": {
@@ -253,11 +292,15 @@ The other three layers speak in canvas coordinates — they say where a Node is 
 
 The same Node is then reachable three ways: **semantic** (`content.text`), **spatial** (`spatial`, plus the derived `spatialContext`), and **visual** (`grounding.nodes[].bbox`).
 
+`grounding` still indexes **Nodes only** — a badge is drawn for a relation, but no relation entry is added to the JSON. There would be nothing new in one: `relations` already names both endpoints by node id, and `grounding.nodes` maps `N1`, `N2`… back to those ids, so the arrow in the picture is already joinable to the relation that describes it.
+
 **`spatial` and `grounding.bbox` are different coordinate systems, and the separation is the point.** `spatial` is the canvas — world units, an origin the camera can't move, unchanged by any export. `bbox` is one screenshot — pixels from that image's top-left, meaningless without the `image` it came with. A Node 900 world units down the canvas is 1880px down a 2×-scale PNG; conflating the two is the mistake this layer makes impossible.
 
 `bbox` is `[x1, y1, x2, y2]` — opposite corners, not `[x, y, width, height]` — rounded to whole pixels, since a screenshot has no sub-pixel position to point at.
 
-The layer is an _index, not an interpretation_. It draws boxes and labels and nothing else — no relation lines, no influence rings, no distance markers. Those claims already exist in `relations` and `spatialContext`, and drawing them would mix a reading of the canvas into what is meant to be a lookup table between pixels and ids. Nothing is drawn filled either, so the canvas underneath survives intact.
+The layer is an _index, not an interpretation_. Every mark on it names something the JSON already states about something the user made: a Node's region, or the gravity they gave an arrow. Nothing _derived_ is drawn — no influence rings, no distance markers, no lines between Nodes that have none — because those claims live in `spatialContext`, and putting them on the image would mix a reading of the canvas into what is meant to be a lookup table between pixels and ids. Only the badges are filled, so the canvas underneath survives intact.
+
+A relation's badge reads `g 0.60`: the `g` is load-bearing, since an image already carries distances and sizes and a bare `0.60` beside an arrow could be read as any of them. It is placed at the **midpoint of the two Nodes' centres** — derived from the Nodes rather than measured from the arrow shape, so a reader can re-derive the position from `nodes[].spatial` and check the badge against the JSON instead of trusting it.
 
 Six things about it are worth knowing:
 
@@ -277,7 +320,7 @@ src/
   index.css                    Global styles + tldraw.css import
   domain/                      The canonical model — no tldraw imports, ever
     node.ts                    CanvasNode, spatial/visual/metadata, createPostItNode
-    canvas.ts                  CanvasDocument — the four layers
+    canvas.ts                  CanvasDocument — the four layers, Relation, clampGravity
     grounding.ts               Grounding types — screenshot pixels, not canvas units
     spatialInfluence.ts        Node centre, distance, influence, buildSpatialContext
     index.ts                   Barrel — the @/domain import surface
@@ -288,7 +331,7 @@ src/
       adapter.ts               shapeToNode / nodeToShape — the round-trip pair
       ids.ts                   NodeId ⇄ TLShapeId
       richText.ts              plain text ⇄ rich text, kept pure
-      relations.ts             arrow ⇄ Relation, and rebuilding arrows on import
+      relations.ts             arrow ⇄ Relation, gravity reads/writes, rebuilding on import
       canvasView.ts            getCanvasDocument(editor), useCanvasDocument()
       metadata.ts              createdAt / updatedAt side effects
       contextualField.ts       setContextualFieldRadius(editor, ids, radius)
@@ -302,12 +345,13 @@ src/
       visualId.ts              assignVisualIds — N1/N2/N3 in reading order
       projection.ts            World ⇄ image: bounds, rotated corners, bbox, measured scale
       grounding.ts             deriveGrounding / buildGrounding — image size + bboxes
-      annotationLayer.ts       Draws the outlines and labels onto a 2D context
+      annotationLayer.ts       Draws the outlines, labels and gravity badges onto a 2D context
       groundedExport.ts        toImage, composite, save the PNG + JSON pair
     ui/
-      InspectorPanel.tsx       Live canonical JSON, influence table, grounded export
-      PostItStylePanel.tsx     Colour controls, and hosts the field control
+      InspectorPanel.tsx       Live canonical JSON, relation + influence tables, grounded export
+      PostItStylePanel.tsx     Colour controls, and hosts the field and gravity controls
       ContextualFieldControl.tsx  Radius input for the selection
+      RelationGravityControl.tsx  Gravity input for the selected relations
       ContextualFieldOverlay.tsx  Dashed reach circles, drawn behind the shapes
       InfluenceBadges.tsx         Both directions' scores, on the affected notes
       ContextualFieldToggle.tsx   The show/hide switch
@@ -339,16 +383,18 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 - **Deleting a Node leaves a dangling arrow.** tldraw drops the binding and keeps the line, which then fails the "both ends bound" guard: the relation vanishes from the JSON while the line stays on the canvas. A delete cascade is the fix if it grates.
 - **Import replaces canonical content only.** Nodes and relation arrows are cleared and rebuilt; plain arrows and drawings are left alone, because the document never described them and so can neither restore nor honestly discard them.
 - **Relation arrows do appear in the grounded screenshot**, unlike the field overlay. They are canvas content the user drew, not a synthesised annotation — which is what the "no influence lines on the export" rule was about. `grounding` still indexes Nodes only.
+- **A gravity badge sits at the endpoint midpoint, not on the drawn curve.** A bent or elbow arrow leaves the straight line between the two centres, so its badge no longer sits on it. Following the curve would mean reading tldraw's arrow geometry, which the pure grounding layer deliberately can't see.
+- **Two badges can collide.** Reciprocal relations (`A → B` and `B → A`) share a midpoint and draw over each other, and a badge between two nearly-touching Nodes can cover a sliver of one of them — the only case where the annotation layer paints over canvas content. Nudging them apart needs a layout pass, which the MVP doesn't have.
 
 ## Testing
 
 `npm test` runs three layers, because the first one alone turned out not to be enough — two bugs shipped that were invisible to pure tests (a meta write the record validator rejected, and a control whose commit was destroyed by the selection change that triggered it).
 
-| Layer              | Files                                                                                                                          | Environment                |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
-| Pure               | `domain/*.test.ts`, `adapter/{adapter,relations}.test.ts`, `grounding/{visualId,projection,grounding,annotationLayer}.test.ts` | `node` — no DOM, no editor |
-| Real editor        | `adapter/{editor,relationEditor}.test.ts`, `grounding/groundedExport.test.ts`                                                  | `jsdom`                    |
-| Rendered component | `ui/*.test.tsx`                                                                                                                | `jsdom`                    |
+| Layer              | Files                                                                                                                                                  | Environment                |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
+| Pure               | `domain/{canvas,spatialInfluence}.test.ts`, `adapter/{adapter,relations}.test.ts`, `grounding/{visualId,projection,grounding,annotationLayer}.test.ts` | `node` — no DOM, no editor |
+| Real editor        | `adapter/{editor,relationEditor}.test.ts`, `grounding/groundedExport.test.ts`                                                                          | `jsdom`                    |
+| Rendered component | `ui/*.test.tsx`                                                                                                                                        | `jsdom`                    |
 
 The default environment is `node`; the DOM suites opt in with a `@vitest-environment jsdom` docblock. That keeps the pure layer honest: `src/domain`, `src/canvas/adapter` and `postItShape.ts` import tldraw for _types only_, and adding a runtime tldraw import to any of them will break it.
 

@@ -1,6 +1,7 @@
 /**
- * Live view of the canonical Canvas, plus JSON export and import, plus the
- * spatial influence derived from it.
+ * Live view of the canonical Canvas, plus JSON export and import, plus the two
+ * strength signals side by side: the gravity the user gave each relation, and the
+ * spatial influence derived from the layout.
  *
  * This is the fastest way to see the model actually working: every interaction
  * on the canvas shows up here as a canonical Node, and the JSON that leaves
@@ -178,7 +179,76 @@ export function InspectorPanel() {
 
 			{error && <div style={{ color: '#c62828' }}>{error}</div>}
 
+			{/* Relations above influence, following the document's own key order: what
+			    the user said, then what the layout implies. Two tables rather than one
+			    joined table on purpose — a shared row would suggest the two numbers
+			    belong to the same scale. */}
+			<RelationSection canvas={canvas} />
 			<InfluenceSection canvas={canvas} />
+		</div>
+	)
+}
+
+/**
+ * Every explicit relation, strongest first.
+ *
+ * Sits beside the influence table rather than in it. A relation's gravity and a
+ * pair's spatial influence are both 0–1 and mean entirely different things — one
+ * is what the user asserted, the other is what the geometry implies — so they are
+ * shown as two answers, never averaged into one.
+ */
+function RelationSection({ canvas }: { canvas: CanvasDocument }) {
+	const [isOpen, setIsOpen] = useState(true)
+
+	// Read from the document, like the influence table: the numbers here and the
+	// JSON above are then the same values by construction.
+	const relations = Object.values(canvas.relations)
+	const sorted = [...relations].sort((a, b) => b.gravity - a.gravity)
+
+	return (
+		<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+			<button onClick={() => setIsOpen(!isOpen)} style={buttonStyle}>
+				{isOpen ? '▾' : '▸'} Relational gravity · {relations.length} relation
+				{relations.length === 1 ? '' : 's'}
+			</button>
+
+			{isOpen && (
+				<div style={{ ...preStyle, minHeight: 0, maxHeight: 160 }}>
+					{relations.length === 0 ? (
+						<span style={{ opacity: 0.6 }}>
+							Nothing connected yet. Drag between two post-its with the <strong>Relation</strong>{' '}
+							tool (<kbd>r</kbd>) — proximity never becomes a relation.
+						</span>
+					) : (
+						<table style={{ width: '100%', borderCollapse: 'collapse' }}>
+							<thead>
+								<tr style={{ opacity: 0.6, textAlign: 'left' }}>
+									<th>source → target</th>
+									<th>type</th>
+									<th style={{ textAlign: 'right' }}>gravity</th>
+								</tr>
+							</thead>
+							<tbody>
+								{sorted.map((relation) => (
+									<tr key={relation.id}>
+										<td>
+											{nodeLabel(canvas.nodes[relation.from])} →{' '}
+											{nodeLabel(canvas.nodes[relation.to])}
+										</td>
+										{/* An unlabelled relation shows a dash, not an empty cell: the
+										    user connected these and didn't say why, and that is a
+										    state worth being able to see. */}
+										<td style={{ opacity: relation.type === undefined ? 0.4 : 1 }}>
+											{relation.type ?? '—'}
+										</td>
+										<td style={{ textAlign: 'right' }}>{relation.gravity.toFixed(2)}</td>
+									</tr>
+								))}
+							</tbody>
+						</table>
+					)}
+				</div>
+			)}
 		</div>
 	)
 }

@@ -14,10 +14,15 @@
  * relation, and a relation produces no influence — `spatialContext` and
  * `relations` are answers to different questions and are derived from different
  * inputs.
+ *
+ * That holds for strength too. A relation's `gravity` is read from the arrow's
+ * meta and from nothing else, so it is unmoved by the distance the notes happen to
+ * sit at, while `spatialContext` is unmoved by the arrow. Two strength signals,
+ * never combined.
  */
 import type { Editor, TLArrowBinding, TLShape, TLShapeId } from 'tldraw'
 import type { CanvasNode, NodeId, Relation, RelationId } from '@/domain'
-import { nodeCenter } from '@/domain'
+import { clampGravity, nodeCenter } from '@/domain'
 import { isPostItShape } from '@/canvas/shapes/postItShape'
 import {
 	nodeIdToShapeId,
@@ -31,6 +36,17 @@ export const ARROW_SHAPE_TYPE = 'arrow'
 
 /** The meta key `RelationTool` stamps. Absent means the arrow is decoration. */
 export const RELATION_META_KEY = 'relation'
+
+/**
+ * Where an arrow's gravity is kept.
+ *
+ * Flat in `shape.meta`, beside the `relation` flag rather than nested inside it.
+ * Nesting would mean `meta.relation` stops being `true`, which is the one value
+ * `isRelationArrow` accepts — every arrow already on a canvas would become
+ * decoration, and the strictness of that check is worth more than the tidier
+ * shape.
+ */
+export const RELATION_GRAVITY_META_KEY = 'gravity'
 
 /**
  * `shape.meta` is unvalidated JSON — tldraw stores and syncs it but never
@@ -53,6 +69,19 @@ export function relationType(arrow: TLShape): string | undefined {
 	const label = richTextToPlainText(props.richText).trim()
 
 	return label === '' ? undefined : label
+}
+
+/**
+ * How strongly the arrow asserts its relationship. 0–1.
+ *
+ * Read from meta rather than from geometry, and that is the whole point: the
+ * arrow's length, its bend and the distance between its endpoints have no bearing
+ * on the number. `clampGravity` supplies the default, so an arrow drawn before
+ * this field existed — or one whose meta was hand-edited into nonsense — reads as
+ * the full-strength claim that drawing it was.
+ */
+export function relationGravity(arrow: TLShape): number {
+	return clampGravity(arrow.meta?.[RELATION_GRAVITY_META_KEY])
 }
 
 /**
@@ -97,6 +126,7 @@ export function getCanvasRelations(
 			id,
 			from,
 			to,
+			gravity: relationGravity(shape),
 			// Spread, so an unlabelled relation has no `type` key at all rather than
 			// one set to undefined — the same treatment `contextualField` gets.
 			...(type === undefined ? {} : { type }),
@@ -119,8 +149,9 @@ export function getCanvasRelations(
  * **Arrow geometry is not restored**, and can't be: the canonical `Relation`
  * carries no anchor, no bend and no terminal detail by design. An imported arrow
  * therefore binds centre-to-centre and re-routes itself. The *relationship* is
- * exact; its draughtsmanship isn't — the same trade as text formatting being lost
- * when a Node is rebuilt from `content.text`.
+ * exact — direction, label and gravity all survive, because all three are claims
+ * rather than draughtsmanship — the same trade as text formatting being lost when
+ * a Node is rebuilt from `content.text`.
  */
 export function createRelations(
 	editor: Editor,
@@ -156,7 +187,14 @@ export function createRelations(
 				// Explicit, because `getInitialMetaForShape` only tags arrows drawn while
 				// the Relation tool is active and an import runs under `select`.
 				// `createShapes` merges meta as `{...initial, ...partial}`, so this wins.
-				meta: { [RELATION_META_KEY]: true },
+				//
+				// Clamped on the way in, not trusted: an imported document is typed by
+				// assertion only, so this is the boundary that keeps a `gravity` of `7`,
+				// `"1"` or nothing at all out of the store.
+				meta: {
+					[RELATION_META_KEY]: true,
+					[RELATION_GRAVITY_META_KEY]: clampGravity(relation.gravity),
+				},
 			}
 		})
 	)
@@ -176,6 +214,49 @@ export function createRelations(
 	)
 
 	return drawable.length
+}
+
+/**
+ * Sets the gravity of the given relation arrows.
+ *
+ * Takes explicit ids rather than reading the current selection, for the reason
+ * `setContextualFieldRadius` does: the value is committed when its input loses
+ * focus, and the click that moves focus has usually changed the selection first,
+ * so "apply to whatever is selected now" would apply it to nothing.
+ *
+ * The patch carries the gravity key alone. tldraw shallow-merges a meta patch key
+ * by key, so `relation: true` survives untouched — writing a whole meta object
+ * here would un-tag the arrow and quietly turn a relation into decoration.
+ *
+ * Returns how many arrows changed, so a caller can tell "none of those were
+ * relations" from "it worked".
+ */
+export function setRelationGravity(editor: Editor, ids: TLShapeId[], gravity: number): number {
+	const arrows = ids
+		.map((id) => editor.getShape(id))
+		.filter((shape) => shape !== undefined)
+		.filter(isRelationArrow)
+
+	if (!arrows.length) return 0
+
+	editor.markHistoryStoppingPoint('set relational gravity')
+	editor.updateShapes(
+		arrows.map((arrow) => ({
+			id: arrow.id,
+			type: arrow.type,
+			meta: { [RELATION_GRAVITY_META_KEY]: clampGravity(gravity) },
+		}))
+	)
+
+	return arrows.length
+}
+
+/** The relation arrows in the current selection, in selection order. */
+export function selectedRelationArrowIds(editor: Editor): TLShapeId[] {
+	return editor
+		.getSelectedShapes()
+		.filter(isRelationArrow)
+		.map((shape) => shape.id)
 }
 
 /** `as const` so `type` keeps its literal type; a widened `string` isn't a binding type. */

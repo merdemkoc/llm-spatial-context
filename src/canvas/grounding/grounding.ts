@@ -19,15 +19,19 @@ import type {
 	Grounding,
 	GroundedNodeRegion,
 	ImageSize,
+	NodeId,
+	Relation,
+	RelationId,
 	VisualId,
 } from '@/domain'
 import {
 	groundingProjection,
 	nodeImageAabb,
+	relationImagePoint,
 	type GroundingProjection,
 } from '@/canvas/grounding/projection'
 import { assignVisualIds, type GroundedNode } from '@/canvas/grounding/visualId'
-import { GROUNDING_PADDING } from '@/canvas/grounding/annotationLayer'
+import { GROUNDING_PADDING, type RelationAnnotation } from '@/canvas/grounding/annotationLayer'
 
 /**
  * Screenshot pixels per world unit, as tldraw's bitmap export produces them:
@@ -114,6 +118,53 @@ export function deriveGrounding(nodes: CanvasNode[]): Grounding {
 	const projection = groundingProjection(nodes, GROUNDING_PADDING)
 
 	return buildGrounding(assignVisualIds(nodes), projection, predictedImageSize(projection))
+}
+
+/**
+ * Two decimals, and a `g` in front of it.
+ *
+ * The prefix is load-bearing: an image already carries distances, sizes and node
+ * labels, and a bare `0.35` beside an arrow could be read as any of them. Two
+ * decimals because gravity is a 0–1 scale a person set by hand — `1.00` and `0.35`
+ * are the resolutions that get used, and a fixed width keeps badges uniform.
+ */
+export function formatGravity(gravity: number): string {
+	return `g ${gravity.toFixed(2)}`
+}
+
+/**
+ * A badge per relation, for the exported PNG.
+ *
+ * Not part of `Grounding`, and that is deliberate: `grounding` indexes nodes, and
+ * a relation is already fully stated in `relations` — by `NodeId`, which
+ * `grounding.nodes` maps back to `N1`, `N2`… So a reader can already join the badge
+ * it sees to the relation it names, and a parallel relation index in the JSON
+ * would restate the same claim in a second coordinate system.
+ *
+ * A relation whose endpoints aren't both in `nodes` is skipped rather than placed
+ * somewhere arbitrary. `getCanvasRelations` can't produce one, but an imported
+ * document can, and a badge floating over nothing is worse than a missing badge.
+ */
+export function relationAnnotations(
+	relations: Record<RelationId, Relation>,
+	nodes: Record<NodeId, CanvasNode>,
+	projection: GroundingProjection,
+	scale: number
+): RelationAnnotation[] {
+	const annotations: RelationAnnotation[] = []
+
+	for (const relation of Object.values(relations)) {
+		const from = nodes[relation.from]
+		const to = nodes[relation.to]
+		if (!from || !to) continue
+
+		annotations.push({
+			label: formatGravity(relation.gravity),
+			at: relationImagePoint(from, to, projection, scale),
+		})
+	}
+
+	return annotations
 }
 
 /**
