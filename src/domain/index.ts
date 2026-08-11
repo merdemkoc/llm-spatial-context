@@ -27,6 +27,8 @@ export {
 	POST_IT_DEFAULT_WIDTH,
 } from '@/domain/node'
 
+export type { Grounding, GroundedNodeRegion, ImageSize, VisualId } from '@/domain/grounding'
+
 export type { Point, SpatialContext, SpatialInfluence } from '@/domain/spatialInfluence'
 
 export {

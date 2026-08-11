@@ -10,7 +10,7 @@
  * runtime code — see `postItShape.ts` for why that matters.
  */
 import type { TLShapeId } from 'tldraw'
-import type { NodeId } from '@/domain'
+import type { NodeId, RelationId } from '@/domain'
 
 const SHAPE_ID_PREFIX = 'shape:'
 
@@ -19,6 +19,20 @@ export function nodeIdToShapeId(nodeId: NodeId): TLShapeId {
 }
 
 export function shapeIdToNodeId(shapeId: TLShapeId | string): NodeId {
+	return shapeId.startsWith(SHAPE_ID_PREFIX) ? shapeId.slice(SHAPE_ID_PREFIX.length) : shapeId
+}
+
+/**
+ * Relations get their identity the same way Nodes do: a relation is projected
+ * from an arrow shape, so the arrow's id without its prefix *is* the RelationId.
+ * Kept as its own pair of functions rather than reusing the Node ones, because
+ * `shapeIdToNodeId(arrowId)` would typecheck and mean something false.
+ */
+export function relationIdToShapeId(relationId: RelationId): TLShapeId {
+	return `${SHAPE_ID_PREFIX}${relationId}` as TLShapeId
+}
+
+export function shapeIdToRelationId(shapeId: TLShapeId | string): RelationId {
 	return shapeId.startsWith(SHAPE_ID_PREFIX) ? shapeId.slice(SHAPE_ID_PREFIX.length) : shapeId
 }
 

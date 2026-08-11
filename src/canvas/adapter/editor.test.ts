@@ -363,7 +363,7 @@ describe('spatialContext in the canonical document', () => {
 		expect(entry('a', 'b').influence).toBeCloseTo(0.5)
 	})
 
-	it('lays the document out as three distinct layers', () => {
+	it('lays the document out as four distinct layers', () => {
 		createPostIt('a', 0, 0, 500)
 
 		expect(Object.keys(getCanvasDocument(editor))).toEqual([
@@ -371,8 +371,86 @@ describe('spatialContext in the canonical document', () => {
 			'nodes',
 			'relations',
 			'spatialContext',
+			'grounding',
 			'metadata',
 		])
+	})
+})
+
+describe('grounding in the canonical document', () => {
+	function grounding() {
+		return getCanvasDocument(editor).grounding
+	}
+
+	it('grounds every node, in reading order', () => {
+		createPostIt('bottom', 0, 900)
+		createPostIt('top', 0, 0)
+
+		expect(Object.entries(grounding().nodes).map(([id, region]) => [id, region.nodeId])).toEqual([
+			['N1', 'top'],
+			['N2', 'bottom'],
+		])
+	})
+
+	it('maps every visual id to a node that is in the document', () => {
+		createPostIt('a', 0, 0)
+		createPostIt('b', 400, 0)
+
+		const document = getCanvasDocument(editor)
+
+		for (const region of Object.values(document.grounding.nodes)) {
+			expect(document.nodes[region.nodeId]).toBeDefined()
+		}
+	})
+
+	/**
+	 * The distinction the layer exists for: `spatial` is canvas coordinates,
+	 * `bbox` is screenshot pixels. They must not be the same numbers.
+	 */
+	it('reports bboxes in screenshot pixels, not canvas coordinates', () => {
+		createPostIt('a', 300, 200)
+
+		const document = getCanvasDocument(editor)
+
+		expect(document.nodes.a.spatial).toMatchObject({ x: 300, y: 200, width: 240, height: 160 })
+		expect(document.grounding.nodes.N1.bbox).toEqual([80, 80, 560, 400])
+	})
+
+	it('is present and empty rather than absent on a bare canvas', () => {
+		expect(grounding().nodes).toEqual({})
+	})
+
+	it('recalculates when a node moves', () => {
+		createPostIt('a', 0, 0)
+		const before = grounding().nodes.N1.bbox
+
+		editor.updateShapes([{ id: nodeIdToShapeId('a'), type: POST_IT_SHAPE_TYPE, x: 500, y: 0 }])
+
+		// The node moved right, but the image is sized to the nodes, so its bbox
+		// stays put while the image gets wider.
+		expect(grounding().nodes.N1.bbox).toEqual(before)
+		expect(grounding().image.width).toBeGreaterThan(0)
+	})
+
+	it('is output, not input: an imported grounding is recomputed', () => {
+		createPostIt('a', 0, 0)
+
+		const exported = JSON.parse(JSON.stringify(getCanvasDocument(editor))) as CanvasDocument
+		exported.grounding = {
+			image: { width: 1, height: 1 },
+			nodes: { N9: { nodeId: 'nonsense', bbox: [1, 2, 3, 4] } },
+		}
+
+		editor.deleteShapes(editor.getCurrentPageShapes().map((shape) => shape.id))
+		editor.createShapes(
+			Object.values(exported.nodes).map((node) => ({
+				...nodeToShape(node),
+				parentId: editor.getCurrentPageId(),
+			}))
+		)
+
+		expect(Object.keys(grounding().nodes)).toEqual(['N1'])
+		expect(grounding().nodes.N1.nodeId).toBe('a')
 	})
 })
 
