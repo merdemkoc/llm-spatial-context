@@ -57,10 +57,11 @@ when two nodes are physically distant.
 The representation therefore allows an LLM to reason across these signals while keeping their
 provenance distinct.
 
-The two terms above are the note's language; the model spells them differently. **Spatial
-influence** is `spatialContext.influences` in the canonical JSON, and **relational gravity** is
-`relations` — an arrow carrying `meta.relation`. If you want to read the code rather than the
-argument, those are the two names to grep for.
+The two terms above are the note's language, and the model now spells both of them out. **Spatial
+influence** is `spatialContext.influences` in the canonical JSON; **relational gravity** is
+`relations` — an arrow carrying `meta.relation` — and each relation states its strength as a
+`gravity` between `0` and `1`. Two numbers, deliberately never combined into one. If you want to
+read the code rather than the argument, those are the names to grep for.
 
 ---
 
@@ -181,14 +182,19 @@ establishes a connection between entities. What the canvas above says, in the ca
 
 ```json
 "relations": {
-	"r1": { "id": "r1", "from": "n4", "to": "n1", "type": "constrains" },
-	"r2": { "id": "r2", "from": "n3", "to": "n2" }
+	"r1": { "id": "r1", "from": "n4", "to": "n1", "gravity": 1, "type": "constrains" },
+	"r2": { "id": "r2", "from": "n3", "to": "n2", "gravity": 1 }
 }
 ```
 
 The second relation has no `type`, and that absence is deliberate. An unlabelled arrow means
 “connected, and the user didn't say why”, which is a different claim from `related_to` — inventing
 that word would be exactly the inference this representation refuses to make.
+
+`gravity` is how strongly the user says the relation holds, and both of these are at `1` because
+drawing an arrow deliberately is the strongest assertion the tool offers — the number is the force
+made explicit rather than assumed. It can be turned down to say “related, but loosely”, and nothing
+about the layout moves it: unlike `influence`, it is not a function of where the notes sit.
 
 This is fundamentally different from proximity.
 
