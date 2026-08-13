@@ -80,3 +80,19 @@ export { deriveEvents, STRONG_PROXIMITY, WEAK_PROXIMITY } from '@/domain/events'
 export type { EventListener, SpatialEventStream } from '@/domain/eventStream'
 
 export { createEventStream, DEFAULT_BUFFER_SIZE, spatialEventStream } from '@/domain/eventStream'
+
+export type {
+	EpisodePairChange,
+	EpisodeRecorderOptions,
+	EpisodeSummary,
+	Schedule,
+} from '@/domain/episode'
+
+export {
+	buildEpisodeSummary,
+	createEpisodeRecorder,
+	EPISODE_BUFFER_LIMIT,
+	EPISODE_IDLE_MS,
+	isTrivialEpisode,
+	TRIVIAL_INFLUENCE_EPSILON,
+} from '@/domain/episode'

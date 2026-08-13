@@ -11,6 +11,14 @@ export default defineConfig({
 			'@': fileURLToPath(new URL('./src', import.meta.url)),
 		},
 	},
+	server: {
+		// In development the client is served here by Vite; the AI companion's two
+		// endpoints live on the standalone Node server (see `server/`), so forward
+		// `/api/*` to it. Keep the port in sync with the server's PORT default.
+		proxy: {
+			'/api': 'http://localhost:8787',
+		},
+	},
 	test: {
 		// The adapter and domain layers are free of tldraw runtime imports, so
 		// the round-trip tests need no DOM. The few suites that drive a real
