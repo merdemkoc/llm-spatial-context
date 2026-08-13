@@ -22,6 +22,9 @@ import { PostItStylePanel } from '@/canvas/ui/PostItStylePanel'
 import { InspectorPanel } from '@/canvas/ui/InspectorPanel'
 import { ContextualFieldOverlay } from '@/canvas/ui/ContextualFieldOverlay'
 import { ContextualFieldToggle } from '@/canvas/ui/ContextualFieldToggle'
+import { CompanionControls } from '@/canvas/ui/CompanionControls'
+import { AgentThinkingIndicator } from '@/canvas/ui/AgentThinkingIndicator'
+import { CompanionTranscriptPanel } from '@/canvas/ui/CompanionTranscriptPanel'
 
 export const customShapeUtils = [PostItShapeUtil]
 
@@ -85,8 +88,16 @@ export const components: TLComponents = {
 	 * switch has to be visible either way.
 	 */
 	SharePanel: () => (
-		<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+		<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
 			<ContextualFieldToggle />
+			<CompanionControls />
+			<AgentThinkingIndicator />
+			<div
+				onPointerDown={(event) => event.stopPropagation()}
+				style={{ width: 280, padding: 8, pointerEvents: 'all' }}
+			>
+				<CompanionTranscriptPanel />
+			</div>
 			<InspectorPanel />
 		</div>
 	),
