@@ -91,6 +91,7 @@ export type {
 export {
 	buildEpisodeSummary,
 	createEpisodeRecorder,
+	EPISODE_BUFFER_LIMIT,
 	EPISODE_IDLE_MS,
 	isTrivialEpisode,
 	TRIVIAL_INFLUENCE_EPSILON,

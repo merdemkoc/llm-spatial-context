@@ -33,12 +33,29 @@ export const EPISODE_IDLE_MS = 2000
  */
 export const TRIVIAL_INFLUENCE_EPSILON = 0.05
 
-/** One directed pair's spatial state at the start and end of an episode. */
+/**
+ * How many events one episode retains.
+ *
+ * A continuous interaction that never pauses would otherwise grow the buffer without
+ * bound. Folding keeps the *summary* small whatever happens; this keeps the buffer that
+ * feeds it small too. Generous, because dropping the oldest events of an episode loses
+ * its `before` — so this is a backstop against a pathological session, not a working limit.
+ */
+export const EPISODE_BUFFER_LIMIT = 2000
+
+/**
+ * One directed pair's spatial state at the start and end of an episode.
+ *
+ * `transitions` keeps the classifications the domain already made — `field_entered`,
+ * `proximity_changed:strong` — rather than making a reader re-derive them from the two
+ * influence numbers. Ordered as they happened, deduplicated.
+ */
 export interface EpisodePairChange {
 	source: NodeId
 	target: NodeId
 	before: PairSnapshot
 	after: PairSnapshot
+	transitions: string[]
 }
 
 /**
@@ -63,6 +80,8 @@ export interface EpisodeRecorderOptions {
 	schedule?: Schedule
 	/** Idle pause before an episode is finalized. Defaults to `EPISODE_IDLE_MS`. */
 	idleMs?: number
+	/** Events one episode retains before dropping the oldest. Defaults to `EPISODE_BUFFER_LIMIT`. */
+	bufferLimit?: number
 }
 
 const PAIR_EVENT_TYPES = ['field_entered', 'field_exited', 'influence_changed', 'proximity_changed']
@@ -76,37 +95,66 @@ function isPairEvent(event: SpatialEvent): event is PairEvent {
 	return PAIR_EVENT_TYPES.includes(event.type)
 }
 
+/** The transition a pair event names, carrying a proximity band's level with it. */
+function transitionOf(event: PairEvent): string {
+	return event.type === 'proximity_changed' ? `${event.type}:${event.level}` : event.type
+}
+
 /**
  * Fold a buffer of events into an episode summary.
  *
- * Structural events pass through untouched. Pair events are collapsed per directed pair:
- * the first sighting fixes `before`, every later sighting advances `after`, so a pair
- * dragged through several intermediate positions reports one net transition. Insertion
- * order of the pairs is preserved.
+ * Everything is collapsed to net change, because the adapter diffs on every store change:
+ * one drag emits a `node_moved` and an `influence_changed` per node per tick, so an
+ * unfolded episode is hundreds of near-identical records that bury the few that matter.
+ *
+ * Per directed pair, the first sighting fixes `before` and every later one advances
+ * `after`, keeping each distinct transition it passed through. `node_moved` folds the same
+ * way, per node: the origin is the first seen, the destination the last. Other structural
+ * events — a relation created, a field resized — are already one per gesture and pass
+ * through untouched. First-seen order is preserved throughout.
  */
 export function buildEpisodeSummary(events: SpatialEvent[]): EpisodeSummary {
-	const structural = events.filter((event) => !isPairEvent(event))
+	const structural: SpatialEvent[] = []
+	const moveIndex = new Map<NodeId, number>()
 
-	const order: string[] = []
+	const pairOrder: string[] = []
 	const byPair = new Map<string, EpisodePairChange>()
 	for (const event of events) {
-		if (!isPairEvent(event)) continue
+		if (!isPairEvent(event)) {
+			if (event.type === 'node_moved') {
+				const foldedAt = moveIndex.get(event.nodeId)
+				if (foldedAt === undefined) {
+					moveIndex.set(event.nodeId, structural.length)
+					structural.push({ ...event })
+				} else {
+					// Advance the net destination in place; the origin stays the first one seen.
+					const folded = structural[foldedAt] as Extract<SpatialEvent, { type: 'node_moved' }>
+					folded.current = event.current
+				}
+			} else {
+				structural.push(event)
+			}
+			continue
+		}
 		const key = `${event.source}\u0000${event.target}`
 		const existing = byPair.get(key)
+		const transition = transitionOf(event)
 		if (existing === undefined) {
-			order.push(key)
+			pairOrder.push(key)
 			byPair.set(key, {
 				source: event.source,
 				target: event.target,
 				before: event.previous,
 				after: event.current,
+				transitions: [transition],
 			})
 		} else {
 			existing.after = event.current
+			if (!existing.transitions.includes(transition)) existing.transitions.push(transition)
 		}
 	}
 
-	return { structural, pairs: order.map((key) => byPair.get(key)!) }
+	return { structural, pairs: pairOrder.map((key) => byPair.get(key)!) }
 }
 
 /**
@@ -142,7 +190,12 @@ const defaultSchedule: Schedule = (fn, ms) => {
  */
 export function createEpisodeRecorder(
 	stream: SpatialEventStream,
-	{ onEpisode, schedule = defaultSchedule, idleMs = EPISODE_IDLE_MS }: EpisodeRecorderOptions
+	{
+		onEpisode,
+		schedule = defaultSchedule,
+		idleMs = EPISODE_IDLE_MS,
+		bufferLimit = EPISODE_BUFFER_LIMIT,
+	}: EpisodeRecorderOptions
 ): () => void {
 	let buffer: SpatialEvent[] = []
 	let cancel: (() => void) | null = null
@@ -157,6 +210,10 @@ export function createEpisodeRecorder(
 
 	const unsubscribe = stream.subscribe((event) => {
 		buffer.push(event)
+		// An interaction that never pauses would otherwise grow this without bound. Dropping
+		// the oldest costs the episode's earliest `before`, which is why the limit is set far
+		// above any real gesture: a backstop, not a working bound.
+		if (buffer.length > bufferLimit) buffer = buffer.slice(-bufferLimit)
 		cancel?.()
 		cancel = schedule(finalize, idleMs)
 	})

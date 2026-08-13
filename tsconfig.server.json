@@ -1,0 +1,24 @@
+{
+	// The client tsconfig deliberately includes only `src`, which left the server —
+	// the one code path that talks to two paid APIs — with no static checking at all.
+	// A fatal type error there (an invalid `output_config.format` field) passed a green
+	// `npm run typecheck` and would have failed on every request at runtime. This is
+	// that hole closed: `npm run typecheck` runs both projects.
+	"compilerOptions": {
+		"target": "ES2022",
+		"lib": ["ES2023"],
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"allowImportingTsExtensions": true,
+		"resolveJsonModule": true,
+		"isolatedModules": true,
+		"noEmit": true,
+		"strict": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"noFallthroughCasesInSwitch": true,
+		"skipLibCheck": true,
+		"types": ["node"]
+	},
+	"include": ["server"]
+}

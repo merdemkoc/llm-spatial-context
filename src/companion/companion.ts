@@ -27,7 +27,7 @@ import {
 	type Schedule,
 	type SpatialEventStream,
 } from '@/domain'
-import type { ObserverClient } from '@/companion/observerClient'
+import type { EpisodeContext, ObserverClient } from '@/companion/observerClient'
 import type { VoiceClient } from '@/companion/voiceClient'
 import {
 	companionThinking,
@@ -54,7 +54,17 @@ export interface CompanionOptions {
 	now?: () => number
 	/** Recent comments passed to the observer. Defaults to `DEFAULT_HISTORY_SIZE`. */
 	historySize?: number
+	/**
+	 * What the episode's node ids refer to, resolved at send time.
+	 *
+	 * The domain deals in `NodeId`s; the observer needs the note text behind them and the
+	 * relations that already exist. Injected rather than imported because reading either
+	 * means reading the canvas, which the domain must not do — the adapter supplies it.
+	 */
+	context?: (summary: EpisodeSummary) => EpisodeContext
 }
+
+const EMPTY_CONTEXT: EpisodeContext = { labels: {}, relations: [] }
 
 /**
  * Start the companion over a stream. Returns a disposer that stops the recorder and
@@ -68,11 +78,13 @@ export function createCompanion({
 	idleMs,
 	now = Date.now,
 	historySize = DEFAULT_HISTORY_SIZE,
+	context,
 }: CompanionOptions): () => void {
 	let inFlight: AbortController | null = null
 	// Bumped per episode. A response whose generation is stale (its episode was
 	// superseded) is ignored even if the observer ignored the abort signal.
 	let generation = 0
+	let disposed = false
 
 	const recentComments = () =>
 		companionTranscript
@@ -99,7 +111,11 @@ export function createCompanion({
 		let decision = null as Awaited<ReturnType<ObserverClient['observe']>> | null
 		try {
 			decision = await observer.observe(
-				{ episode: summary, recentComments: recentComments() },
+				{
+					episode: summary,
+					context: context?.(summary) ?? EMPTY_CONTEXT,
+					recentComments: recentComments(),
+				},
 				controller.signal
 			)
 		} catch {
@@ -110,11 +126,17 @@ export function createCompanion({
 		// A newer episode started while we waited: it now owns the thinking indicator
 		// and the answer we have is about a canvas that has already changed. Drop it.
 		if (mine !== generation) return
+		// Torn down while we waited: the atoms belong to whatever mounts next.
+		if (disposed) return
 
 		inFlight = null
 		companionThinking.set(false)
 
 		if (!decision || !decision.speak || !decision.comment) return
+		// Re-read the switch rather than trusting the check made before the await: a user
+		// who switches observation off mid-thought is asking not to be spoken to, and the
+		// answer in hand was authorised by a setting that no longer holds.
+		if (!observationEnabled.get()) return
 
 		// Record before speaking so the transcript fills even with voice off, and so a
 		// playback failure can't lose the observation.
@@ -135,8 +157,13 @@ export function createCompanion({
 	})
 
 	return () => {
+		disposed = true
 		disposeRecorder()
 		inFlight?.abort()
 		inFlight = null
+		// Abort only cancels a request; a clip already speaking has to be silenced, or the
+		// companion keeps talking after the canvas it was describing is gone.
+		voice.stop()
+		companionThinking.set(false)
 	}
 }

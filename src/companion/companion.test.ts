@@ -70,12 +70,22 @@ function fakeObserver() {
 
 function fakeVoice() {
 	const spoken: string[] = []
+	let stopped = 0
 	const voice: VoiceClient = {
 		speak: async (text) => {
 			spoken.push(text)
 		},
+		stop: () => {
+			stopped += 1
+		},
 	}
-	return { voice, spoken }
+	return {
+		voice,
+		spoken,
+		get stopped() {
+			return stopped
+		},
+	}
 }
 
 /** Let all pending microtasks (awaited promises) settle. */
@@ -208,5 +218,136 @@ describe('createCompanion', () => {
 		timer.flush()
 
 		expect(calls[1].request.recentComments).toEqual(['first observation'])
+	})
+
+	// The abort assertion alone passes even with the generation guard deleted, because a
+	// fake observer can ignore the signal — as a real one can, having already sent the
+	// request. This resolves the *superseded* call and proves its answer is discarded.
+	it('discards a superseded answer even if the abort is ignored', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer, calls } = fakeObserver()
+		const { voice, spoken } = fakeVoice()
+		createCompanion({ stream, observer, voice, schedule: timer.schedule })
+
+		stream.emit([meaningful()])
+		timer.flush()
+		stream.emit([influence('c', 'd', 0.1, 0.7)])
+		timer.flush()
+
+		// The stale call answers late, after the fresh episode already owns the loop.
+		calls[0].resolve({ speak: true, comment: 'about a canvas that has moved on' })
+		await tick()
+
+		expect(spoken).toEqual([])
+		expect(companionTranscript.get()).toEqual([])
+		// The fresh episode still owns the indicator and can still speak.
+		expect(companionThinking.get()).toBe(true)
+
+		calls[1].resolve({ speak: true, comment: 'about the canvas as it is now' })
+		await tick()
+
+		expect(spoken).toEqual(['about the canvas as it is now'])
+	})
+
+	it('keeps quiet when observation is switched off while it is thinking', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer, calls } = fakeObserver()
+		const { voice, spoken } = fakeVoice()
+		createCompanion({ stream, observer, voice, schedule: timer.schedule })
+
+		stream.emit([meaningful()])
+		timer.flush()
+		observationEnabled.set(false)
+		calls[0].resolve({ speak: true, comment: 'too late to say this' })
+		await tick()
+
+		expect(spoken).toEqual([])
+		expect(companionTranscript.get()).toEqual([])
+		expect(companionThinking.get()).toBe(false)
+	})
+
+	it('says nothing when the observer fails, and stops thinking', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { voice, spoken } = fakeVoice()
+		const observer: ObserverClient = { observe: () => Promise.reject(new Error('502')) }
+		createCompanion({ stream, observer, voice, schedule: timer.schedule })
+
+		stream.emit([meaningful()])
+		timer.flush()
+		await tick()
+
+		expect(spoken).toEqual([])
+		expect(companionTranscript.get()).toEqual([])
+		expect(companionThinking.get()).toBe(false)
+	})
+
+	it('stops speaking and clears the indicator when disposed', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer, calls } = fakeObserver()
+		const voiceFake = fakeVoice()
+		const dispose = createCompanion({
+			stream,
+			observer,
+			voice: voiceFake.voice,
+			schedule: timer.schedule,
+		})
+
+		stream.emit([meaningful()])
+		timer.flush()
+		dispose()
+		// An answer that arrives after teardown must not reach a companion that is gone.
+		calls[0].resolve({ speak: true, comment: 'nobody is listening' })
+		await tick()
+
+		expect(voiceFake.spoken).toEqual([])
+		expect(companionTranscript.get()).toEqual([])
+		expect(companionThinking.get()).toBe(false)
+		expect(voiceFake.stopped).toBeGreaterThan(0)
+	})
+
+	it('passes only the last few comments, not the whole transcript', async () => {
+		companionTranscript.set([
+			{ comment: 'one', at: 1 },
+			{ comment: 'two', at: 2 },
+			{ comment: 'three', at: 3 },
+			{ comment: 'four', at: 4 },
+		])
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer, calls } = fakeObserver()
+		const { voice } = fakeVoice()
+		createCompanion({ stream, observer, voice, schedule: timer.schedule, historySize: 2 })
+
+		stream.emit([meaningful()])
+		timer.flush()
+
+		expect(calls[0].request.recentComments).toEqual(['three', 'four'])
+	})
+
+	it('tells the observer what the ids mean', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer, calls } = fakeObserver()
+		const { voice } = fakeVoice()
+		createCompanion({
+			stream,
+			observer,
+			voice,
+			schedule: timer.schedule,
+			context: () => ({
+				labels: { a: 'pricing', b: 'onboarding' },
+				relations: [{ source: 'a', target: 'b', gravity: 1 }],
+			}),
+		})
+
+		stream.emit([meaningful()])
+		timer.flush()
+
+		expect(calls[0].request.context.labels).toEqual({ a: 'pricing', b: 'onboarding' })
+		expect(calls[0].request.context.relations).toHaveLength(1)
 	})
 })

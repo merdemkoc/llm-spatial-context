@@ -46,6 +46,12 @@ const moved = (nodeId: string): SpatialEvent => ({
 	current: { x: 10, y: 10 },
 })
 
+const movedTo = (
+	nodeId: string,
+	previous: { x: number; y: number },
+	current: { x: number; y: number }
+): SpatialEvent => ({ type: 'node_moved', nodeId, previous, current })
+
 const relationCreated = (relationId: string, source: string, target: string): SpatialEvent => ({
 	type: 'relation_created',
 	relationId,
@@ -62,7 +68,13 @@ describe('buildEpisodeSummary — folding pairs', () => {
 		])
 
 		expect(summary.pairs).toEqual([
-			{ source: 'a', target: 'b', before: { influence: 0.1 }, after: { influence: 0.58 } },
+			{
+				source: 'a',
+				target: 'b',
+				before: { influence: 0.1 },
+				after: { influence: 0.58 },
+				transitions: ['influence_changed'],
+			},
 		])
 	})
 
@@ -91,6 +103,59 @@ describe('buildEpisodeSummary — folding pairs', () => {
 		])
 
 		expect(summary.pairs).toHaveLength(2)
+	})
+
+	// The adapter diffs on every store change, so a drag emits a `node_moved` per node per
+	// tick — hundreds of them. Unfolded they dominate the payload and bury the pair deltas
+	// that carry the actual signal.
+	it('folds repeated moves of one node into a single net move', () => {
+		const summary = buildEpisodeSummary([
+			movedTo('a', { x: 0, y: 0 }, { x: 10, y: 0 }),
+			movedTo('a', { x: 10, y: 0 }, { x: 20, y: 0 }),
+			movedTo('a', { x: 20, y: 0 }, { x: 30, y: 0 }),
+		])
+
+		expect(summary.structural).toEqual([
+			{ type: 'node_moved', nodeId: 'a', previous: { x: 0, y: 0 }, current: { x: 30, y: 0 } },
+		])
+	})
+
+	it('folds each moved node separately, in first-seen order', () => {
+		const summary = buildEpisodeSummary([
+			movedTo('a', { x: 0, y: 0 }, { x: 1, y: 0 }),
+			movedTo('b', { x: 5, y: 5 }, { x: 6, y: 5 }),
+			movedTo('a', { x: 1, y: 0 }, { x: 2, y: 0 }),
+		])
+
+		expect(summary.structural).toHaveLength(2)
+		expect(summary.structural.map((event) => ('nodeId' in event ? event.nodeId : ''))).toEqual([
+			'a',
+			'b',
+		])
+	})
+
+	// The domain already classifies each transition — `field_entered`, `proximity_changed`
+	// with a level. Dropping that leaves the model re-deriving it from two floats.
+	it('records the transitions a pair went through', () => {
+		const summary = buildEpisodeSummary([
+			{
+				type: 'field_entered',
+				source: 'a',
+				target: 'b',
+				previous: { influence: 0 },
+				current: { influence: 0.4 },
+			},
+			{
+				type: 'proximity_changed',
+				source: 'a',
+				target: 'b',
+				level: 'strong',
+				previous: { influence: 0.4 },
+				current: { influence: 0.8 },
+			},
+		])
+
+		expect(summary.pairs[0].transitions).toEqual(['field_entered', 'proximity_changed:strong'])
 	})
 })
 
@@ -169,7 +234,13 @@ describe('createEpisodeRecorder', () => {
 
 		expect(onEpisode).toHaveBeenCalledTimes(1)
 		expect(onEpisode.mock.calls[0][0].pairs).toEqual([
-			{ source: 'a', target: 'b', before: { influence: 0.04 }, after: { influence: 0.58 } },
+			{
+				source: 'a',
+				target: 'b',
+				before: { influence: 0.04 },
+				after: { influence: 0.58 },
+				transitions: ['influence_changed'],
+			},
 		])
 	})
 

@@ -3,6 +3,7 @@ import { spatialEventStream } from '@/domain'
 import { components, customShapeUtils, customTools, uiOverrides } from '@/canvas/config'
 import { registerNodeMetadata } from '@/canvas/adapter/metadata'
 import { registerSpatialEvents } from '@/canvas/adapter/spatialEvents'
+import { readEpisodeContext } from '@/canvas/adapter/episodeContext'
 import { seedDemoScene } from '@/canvas/dev/seedScenario'
 import { createCompanion } from '@/companion/companion'
 import { createHttpObserverClient } from '@/companion/observerClient'
@@ -32,6 +33,9 @@ function handleMount(editor: Editor) {
 			stream: spatialEventStream,
 			observer: createHttpObserverClient(),
 			voice: createHttpVoiceClient(),
+			// Resolves the episode's node ids to the notes' own text, plus the relations that
+			// already exist, so the observer can talk about ideas rather than shape ids.
+			context: (summary) => readEpisodeContext(editor, summary),
 		}),
 	]
 
