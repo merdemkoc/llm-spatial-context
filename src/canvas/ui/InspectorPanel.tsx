@@ -19,7 +19,7 @@
  * prop — see `EventLogPanel`.
  */
 import { useState } from 'react'
-import { useEditor } from 'tldraw'
+import { TldrawUiButton, TldrawUiButtonLabel, useEditor } from 'tldraw'
 import type { CanvasDocument, CanvasNode, SpatialInfluence } from '@/domain'
 import { DEFAULT_STRATEGY } from '@/domain'
 import { useCanvasDocument } from '@/canvas/adapter/canvasView'
@@ -29,12 +29,17 @@ import { createRelations, isRelationArrow } from '@/canvas/adapter/relations'
 import { isPostItShape } from '@/canvas/shapes/postItShape'
 import { exportGroundedScreenshot } from '@/canvas/grounding/groundedExport'
 import { EventLogPanel } from '@/canvas/ui/EventLogPanel'
+import { MONO, caption, panelButton, panelChrome, readoutBox } from '@/canvas/ui/theme'
 
-export function InspectorPanel() {
+/**
+ * Open or closed is `InspectorDock`'s business, not this component's: the button that
+ * opens the panel lives in the rail above it, so the state has to sit with their shared
+ * parent. This renders only the open panel.
+ */
+export function InspectorPanel({ onClose }: { onClose: () => void }) {
 	const editor = useEditor()
 	const canvas = useCanvasDocument()
 
-	const [isOpen, setIsOpen] = useState(false)
 	const [draft, setDraft] = useState<string | null>(null)
 	const [error, setError] = useState<string | null>(null)
 	const [isGrounding, setIsGrounding] = useState(false)
@@ -108,89 +113,94 @@ export function InspectorPanel() {
 		setError(null)
 	}
 
-	if (!isOpen) {
-		return (
-			// The pointer-down guard matters as much as the click handler: without it
-			// the event reaches the canvas and clears the selection, which tears down
-			// whatever selection-scoped control the user was mid-edit in.
-			<div
-				onPointerDown={(event) => event.stopPropagation()}
-				style={{ padding: 8, pointerEvents: 'all' }}
-			>
-				<button onClick={() => setIsOpen(true)} style={buttonStyle}>
-					Canonical JSON
-				</button>
-			</div>
-		)
-	}
-
 	return (
+		// The pointer-down guard matters as much as the controls: without it the event
+		// reaches the canvas and clears the selection, which tears down whatever
+		// selection-scoped control the user was mid-edit in.
 		<div
 			onPointerDown={(event) => event.stopPropagation()}
 			onWheel={(event) => event.stopPropagation()}
 			style={{
+				...panelChrome,
 				pointerEvents: 'all',
 				width: 380,
-				maxHeight: '80vh',
-				margin: 8,
-				padding: 8,
+				/**
+				 * Room left for the neighbours. tldraw stacks this zone above the style
+				 * panel in one column, so a panel that takes 80vh pushes the style panel
+				 * off the bottom of the screen — and a selected post-it is exactly when
+				 * you want both. The reserve is the rail above (~56px) plus the tallest
+				 * the style panel gets (~250px) plus margins. Held constant rather than
+				 * computed from the selection, so the panel doesn't resize as you click
+				 * around.
+				 */
+				maxHeight: 'max(240px, calc(100vh - 320px))',
+				padding: 'var(--tl-space-3)',
 				display: 'flex',
 				flexDirection: 'column',
-				gap: 8,
+				gap: 'var(--tl-space-3)',
 				// Four collapsible sections can outgrow `maxHeight`, and without this the
 				// overflow renders *outside* the panel's own background rather than
 				// scrolling inside it. `onWheel` above already keeps the scroll from
 				// reaching the canvas and zooming it.
 				overflowY: 'auto',
-				borderRadius: 8,
-				background: 'var(--tl-color-panel, #fff)',
-				boxShadow: '0 2px 12px rgba(0, 0, 0, 0.2)',
-				font: '12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace',
+				font: MONO,
 			}}
 		>
-			<div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+			<div style={{ display: 'flex', gap: 'var(--tl-space-2)', alignItems: 'center' }}>
 				<strong style={{ flex: 1 }}>
 					Canvas · {nodeCount} node{nodeCount === 1 ? '' : 's'}
 				</strong>
-				<button onClick={() => navigator.clipboard.writeText(json)} style={buttonStyle}>
-					Copy
-				</button>
-				<button onClick={() => setDraft(draft === null ? json : null)} style={buttonStyle}>
-					{draft === null ? 'Import' : 'Cancel'}
-				</button>
-				<button onClick={() => setIsOpen(false)} style={buttonStyle}>
-					Close
-				</button>
+				<TldrawUiButton type="low" onClick={() => navigator.clipboard.writeText(json)}>
+					<TldrawUiButtonLabel>Copy</TldrawUiButtonLabel>
+				</TldrawUiButton>
+				<TldrawUiButton type="low" onClick={() => setDraft(draft === null ? json : null)}>
+					<TldrawUiButtonLabel>{draft === null ? 'Import' : 'Cancel'}</TldrawUiButtonLabel>
+				</TldrawUiButton>
+				<TldrawUiButton type="low" onClick={onClose}>
+					<TldrawUiButtonLabel>Close</TldrawUiButtonLabel>
+				</TldrawUiButton>
 			</div>
 
 			{/* Its own row: the label has to say what comes out, and there is no room
 			    for that beside three other buttons in a 380px panel. */}
-			<button
+			<TldrawUiButton
+				type="low"
 				onClick={handleGroundedScreenshot}
 				disabled={isGrounding || nodeCount === 0}
-				title="A PNG of the canvas with every node outlined and labelled, plus this JSON with an N1/N2/N3 → node id map"
-				style={buttonStyle}
+				tooltip="A PNG of the canvas with every node outlined and labelled, plus this JSON with an N1/N2/N3 → node id map"
 			>
-				{isGrounding ? 'Rendering…' : 'Grounded screenshot · PNG + JSON'}
-			</button>
+				<TldrawUiButtonLabel>
+					{isGrounding ? 'Rendering…' : 'Grounded screenshot · PNG + JSON'}
+				</TldrawUiButtonLabel>
+			</TldrawUiButton>
 
 			{draft === null ? (
-				<pre style={preStyle}>{json}</pre>
+				<pre
+					style={{
+						...readoutBox,
+						minHeight: 200,
+						flex: 1,
+						whiteSpace: 'pre-wrap',
+						wordBreak: 'break-word',
+					}}
+				>
+					{json}
+				</pre>
 			) : (
 				<>
 					<textarea
 						value={draft}
 						onChange={(event) => setDraft(event.target.value)}
 						spellCheck={false}
-						style={{ ...preStyle, resize: 'vertical' }}
+						style={{ ...readoutBox, minHeight: 200, flex: 1, resize: 'vertical' }}
 					/>
-					<button onClick={handleImport} style={buttonStyle}>
-						Replace canvas with this JSON
-					</button>
+					<TldrawUiButton type="low" onClick={handleImport}>
+						<TldrawUiButtonLabel>Replace canvas with this JSON</TldrawUiButtonLabel>
+					</TldrawUiButton>
 				</>
 			)}
 
-			{error && <div style={{ color: '#c62828' }}>{error}</div>}
+			{error && <div style={{ color: 'var(--tl-color-danger)' }}>{error}</div>}
 
 			{/* Relations above influence, following the document's own key order: what
 			    the user said, then what the layout implies. Two tables rather than one
@@ -229,23 +239,23 @@ function RelationSection({ canvas }: { canvas: CanvasDocument }) {
 	const sorted = [...relations].sort((a, b) => b.gravity - a.gravity)
 
 	return (
-		<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-			<button onClick={() => setIsOpen(!isOpen)} style={buttonStyle}>
+		<div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--tl-space-2)' }}>
+			<button onClick={() => setIsOpen(!isOpen)} style={{ ...panelButton, textAlign: 'left' }}>
 				{isOpen ? '▾' : '▸'} Relational gravity · {relations.length} relation
 				{relations.length === 1 ? '' : 's'}
 			</button>
 
 			{isOpen && (
-				<div style={{ ...preStyle, minHeight: 0, maxHeight: 160 }}>
+				<div style={{ ...readoutBox, maxHeight: 160 }}>
 					{relations.length === 0 ? (
-						<span style={{ opacity: 0.6 }}>
+						<span style={caption}>
 							Nothing connected yet. Drag between two post-its with the <strong>Relation</strong>{' '}
 							tool (<kbd>r</kbd>) — proximity never becomes a relation.
 						</span>
 					) : (
 						<table style={{ width: '100%', borderCollapse: 'collapse' }}>
 							<thead>
-								<tr style={{ opacity: 0.6, textAlign: 'left' }}>
+								<tr style={{ ...caption, textAlign: 'left' }}>
 									<th>source → target</th>
 									<th>type</th>
 									<th style={{ textAlign: 'right' }}>gravity</th>
@@ -299,19 +309,19 @@ function InfluenceSection({ canvas }: { canvas: CanvasDocument }) {
 	const withField = nodes.filter((node) => node.contextualField).length
 
 	return (
-		<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-			<button onClick={() => setIsOpen(!isOpen)} style={buttonStyle}>
+		<div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--tl-space-2)' }}>
+			<button onClick={() => setIsOpen(!isOpen)} style={{ ...panelButton, textAlign: 'left' }}>
 				{isOpen ? '▾' : '▸'} Spatial influence · {active} of {influences.length} pair
 				{influences.length === 1 ? '' : 's'} in range
 				{influences.length > 0 && withField === 0 ? ' · no radius set' : ''}
 			</button>
 
 			{isOpen && (
-				<div style={{ ...preStyle, minHeight: 0, maxHeight: 200 }}>
+				<div style={{ ...readoutBox, maxHeight: 200 }}>
 					{influences.length === 0 ? (
-						<span style={{ opacity: 0.6 }}>Needs at least two nodes.</span>
+						<span style={caption}>Needs at least two nodes.</span>
 					) : withField === 0 ? (
-						<span style={{ opacity: 0.6 }}>
+						<span style={caption}>
 							No node has a contextual field yet, so nothing can influence anything. Select a
 							post-it and set a <strong>Contextual field radius</strong> in the style panel — a
 							radius is never applied implicitly.
@@ -319,7 +329,7 @@ function InfluenceSection({ canvas }: { canvas: CanvasDocument }) {
 					) : (
 						<table style={{ width: '100%', borderCollapse: 'collapse' }}>
 							<thead>
-								<tr style={{ opacity: 0.6, textAlign: 'left' }}>
+								<tr style={{ ...caption, textAlign: 'left' }}>
 									<th>source → target</th>
 									<th style={{ textAlign: 'right' }}>dist</th>
 									<th style={{ textAlign: 'right' }}>influence</th>
@@ -374,16 +384,16 @@ function EffectiveStrengthSection({ canvas }: { canvas: CanvasDocument }) {
 	const strategy = rows[0]?.strategy ?? DEFAULT_STRATEGY.name
 
 	return (
-		<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-			<button onClick={() => setIsOpen(!isOpen)} style={buttonStyle}>
+		<div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--tl-space-2)' }}>
+			<button onClick={() => setIsOpen(!isOpen)} style={{ ...panelButton, textAlign: 'left' }}>
 				{isOpen ? '▾' : '▸'} Effective strength · {rows.length} connected pair
 				{rows.length === 1 ? '' : 's'} · {strategy}
 			</button>
 
 			{isOpen && (
-				<div style={{ ...preStyle, minHeight: 0, maxHeight: 200 }}>
+				<div style={{ ...readoutBox, maxHeight: 200 }}>
 					{rows.length === 0 ? (
-						<span style={{ opacity: 0.6 }}>
+						<span style={caption}>
 							{relations === 0
 								? 'Nothing connected yet — proximity alone produces no combined row.'
 								: 'No relation connects two nodes on this canvas.'}
@@ -391,7 +401,7 @@ function EffectiveStrengthSection({ canvas }: { canvas: CanvasDocument }) {
 					) : (
 						<table style={{ width: '100%', borderCollapse: 'collapse' }}>
 							<thead>
-								<tr style={{ opacity: 0.6, textAlign: 'left' }}>
+								<tr style={{ ...caption, textAlign: 'left' }}>
 									<th>source → target</th>
 									<th style={{ textAlign: 'right' }}>infl</th>
 									<th style={{ textAlign: 'right' }}>grav</th>
@@ -406,8 +416,12 @@ function EffectiveStrengthSection({ canvas }: { canvas: CanvasDocument }) {
 										</td>
 										{/* The two inputs dimmed, the result not: the row is about the
 										    combination, and the inputs are here to make it checkable. */}
-										<td style={{ textAlign: 'right', opacity: 0.6 }}>{row.influence.toFixed(3)}</td>
-										<td style={{ textAlign: 'right', opacity: 0.6 }}>{row.gravity.toFixed(2)}</td>
+										<td style={{ textAlign: 'right', color: 'var(--tl-color-text-3)' }}>
+											{row.influence.toFixed(3)}
+										</td>
+										<td style={{ textAlign: 'right', color: 'var(--tl-color-text-3)' }}>
+											{row.gravity.toFixed(2)}
+										</td>
 										<td style={{ textAlign: 'right' }}>{row.effectiveStrength.toFixed(3)}</td>
 									</tr>
 								))}
@@ -430,27 +444,4 @@ function nodeLabel(node: CanvasNode | undefined): string {
 	if (!text) return node.id.slice(0, 8)
 
 	return text.length > LABEL_LENGTH ? `${text.slice(0, LABEL_LENGTH)}…` : text
-}
-
-const buttonStyle: React.CSSProperties = {
-	padding: '4px 8px',
-	borderRadius: 4,
-	border: '1px solid rgba(0, 0, 0, 0.2)',
-	background: 'var(--tl-color-panel, #fff)',
-	cursor: 'pointer',
-	font: 'inherit',
-}
-
-const preStyle: React.CSSProperties = {
-	flex: 1,
-	minHeight: 200,
-	margin: 0,
-	padding: 8,
-	overflow: 'auto',
-	whiteSpace: 'pre-wrap',
-	wordBreak: 'break-word',
-	borderRadius: 4,
-	border: '1px solid rgba(0, 0, 0, 0.1)',
-	background: 'var(--tl-color-muted-2, #f9f9f9)',
-	font: 'inherit',
 }

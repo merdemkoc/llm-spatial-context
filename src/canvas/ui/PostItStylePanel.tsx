@@ -27,6 +27,7 @@ import {
 } from '@/canvas/shapes/postItStyles'
 import { ContextualFieldControl } from '@/canvas/ui/ContextualFieldControl'
 import { RelationGravityControl } from '@/canvas/ui/RelationGravityControl'
+import { caption } from '@/canvas/ui/theme'
 
 interface SwatchRowProps {
 	label: string
@@ -42,9 +43,9 @@ function SwatchRow({ label, style, swatches }: SwatchRowProps) {
 	])
 
 	return (
-		<div style={{ padding: '4px 8px' }}>
-			<div style={{ fontSize: 11, opacity: 0.6, marginBottom: 4 }}>{label}</div>
-			<div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+		<div style={{ padding: 'var(--tl-space-2) var(--tl-space-3)' }}>
+			<div style={{ ...caption, marginBottom: 'var(--tl-space-2)' }}>{label}</div>
+			<div style={{ display: 'flex', gap: 'var(--tl-space-2)', flexWrap: 'wrap' }}>
 				{swatches.map((swatch) => (
 					<button
 						key={swatch}
@@ -59,13 +60,14 @@ function SwatchRow({ label, style, swatches }: SwatchRowProps) {
 						style={{
 							width: 20,
 							height: 20,
-							borderRadius: 4,
+							borderRadius: 'var(--tl-radius-1)',
 							cursor: 'pointer',
 							backgroundColor: swatch,
-							border:
-								current === swatch
-									? '2px solid var(--tl-color-selected, #2f80ed)'
-									: '1px solid rgba(0, 0, 0, 0.2)',
+							// The selected ring is a shadow rather than a thicker border: swapping 1px
+							// for 2px shrinks the box a pixel on each axis, so every swatch in the row
+							// twitched as the selection moved along it.
+							border: '1px solid var(--tl-color-divider)',
+							boxShadow: current === swatch ? '0 0 0 2px var(--tl-color-selected)' : undefined,
 						}}
 					/>
 				))}

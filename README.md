@@ -93,6 +93,23 @@ npm run dev
 
 Open http://localhost:5173.
 
+![The toolbar: four buttons — pointer, hand, Post-it and Relation](docs/images/toolbar.png)
+
+The toolbar carries four tools and only four: **pointer**, **hand**, **Post-it** (`p`) and **Relation** (`r`). Those are the only marks the canonical model can account for — a post-it is a [Node](#four-layers-of-context), a relation is a [Relation](#relations), and the other two are how you read the canvas rather than add to it. The rest of tldraw's toolbar — draw, eraser, arrow, text, note, media, the sixteen geo shapes, line, highlight, laser, frame — stays registered and stays on its keyboard shortcuts; it is only off the toolbar, because a rectangle or a laser stroke would be a mark this model has nothing to say about, and offering one invites work the prototype cannot hear.
+
+The rest of the UI follows the same rule — earn permanent space or be one click away:
+
+| Where               | What                                                                                                                                                                    | Why there                                                                                                                                                                      |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Top centre          | The **companion's** latest sentence, released word by word as the voice says it — and while it works, a hint naming the job it is on. Click it for the full transcript. | The only part of this UI that speaks unprompted, so the only one always visible. tldraw leaves this zone empty.                                                                |
+| Top right           | **⋯** → the three switches (contextual fields, AI observation, voice) · **`</>` Canonical JSON** → the [Inspector](#four-layers-of-context)                             | tldraw stacks this zone above the style panel in one column, so anything permanent here pushes the style panel down the screen. Two buttons, and the panels hang beneath them. |
+| Right, on selection | Field radius, [relational gravity](#relational-gravity), post-it colours                                                                                                | Selection-scoped, so it belongs in tldraw's own style panel.                                                                                                                   |
+| Bottom left         | Zoom                                                                                                                                                                    | tldraw's.                                                                                                                                                                      |
+
+Chrome is built from tldraw's own tokens (`--tl-color-*`, `--tl-space-*`, `--tl-radius-*`, `--tl-shadow-*`) in `src/canvas/ui/theme.ts`, which is what makes the panels follow the editor's theme instead of only matching one of them:
+
+![The same canvas in tldraw's dark theme: the Inspector, the companion chip and the field overlay all following the editor's dark tokens](docs/images/theme-dark.png)
+
 ## Scripts
 
 | Script                 | Does                                                 |
@@ -135,7 +152,7 @@ Two details worth knowing:
 
 #### Seeing it
 
-The field was the one piece of spatial state with no visual form — set as a number, read back as numbers, so "does this note reach that one?" meant comparing a distance column against a radius by hand. The **Contextual fields** switch (top right, beside _Canonical JSON_) draws it: a dashed circle per Node that has a radius, every one at once, so overlapping reach is something you see rather than compute.
+The field was the one piece of spatial state with no visual form — set as a number, read back as numbers, so "does this note reach that one?" meant comparing a distance column against a radius by hand. The **Contextual fields** switch (top right, behind **⋯**) draws it: a dashed circle per Node that has a radius, every one at once, so overlapping reach is something you see rather than compute.
 
 ![Two post-its with contextual fields drawn as overlapping dashed reach circles](docs/images/contextual-field-overlay.png)
 
@@ -243,7 +260,7 @@ The **Relation** tool (`r`) draws an arrow from one post-it to another, and that
 
 **The tool is ours; the shape is tldraw's.** `ArrowShapeTool` is a five-line `StateNode`, so `RelationTool` subclasses it and inherits the entire interaction — drag-to-connect, binding, precise anchors, elbow routing, label editing, re-routing when a Node moves. A bespoke `relation` shape would have meant reimplementing `ArrowShapeUtil` to arrive back at an arrow. `ShapeUtil.canBind()` already defaults to `true`, so post-its were bindable from the start; only the projection was missing.
 
-What separates a relation from a decorative arrow is `meta.relation`, stamped by `getInitialMetaForShape` while the Relation tool is the current one — not the shape type (both are `arrow`) and not the styling, so restyling an arrow never changes what it means. **A plain arrow between two post-its stays decoration.**
+What separates a relation from a decorative arrow is `meta.relation`, stamped by `getInitialMetaForShape` while the Relation tool is the current one — not the shape type (both are `arrow`) and not the styling, so restyling an arrow never changes what it means. **A plain arrow between two post-its stays decoration.** The toolbar offers only the Relation tool, so that decorative arrow now takes a deliberate `a` to reach; the distinction is a fact about the model either way, not about which buttons are on screen.
 
 Relations are **derived on read**, like everything else: `getCanvasRelations` walks the page's relation arrows and reads their bindings, so there is no second store, and moving a Node, redrawing an arrow or undoing all produce a correct document with nothing to invalidate. Four guards decide what counts, and each is a claim about what a relation is:
 
@@ -520,7 +537,11 @@ src/
       annotationLayer.ts       Draws the outlines, labels and gravity badges onto a 2D context
       groundedExport.ts        toImage, composite, save the PNG + JSON pair
     ui/
+      theme.ts                 Panel chrome, built from tldraw's own theme tokens
+      InspectorDock.tsx        The top-right rail: two buttons, Inspector beneath
       InspectorPanel.tsx       Live canonical JSON, relation + influence tables, grounded export
+      CompanionBar.tsx         The top-centre chip: latest sentence, thinking, transcript
+      ViewSettingsPopover.tsx  The ⋯ button's three switches
       PostItStylePanel.tsx     Colour controls, and hosts the field and gravity controls
       ContextualFieldControl.tsx  Radius input for the selection
       RelationGravityControl.tsx  Gravity input for the selected relations
@@ -541,7 +562,7 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 - **A new node type** → add it to `NodeType` in `src/domain/node.ts`, give it a shape util and tool under `src/canvas/shapes/`, and extend the adapter. The `Canvas` model itself shouldn't need to change.
 - **Prototype logic that needs the editor** → the `onMount(editor)` callback in `src/canvas/Canvas.tsx`.
 - **A new custom shape** → copy `src/canvas/shapes/PostItShapeUtil.tsx`, then register it in `customShapeUtils` in `src/canvas/config.tsx`.
-- **A new custom tool** → copy `src/canvas/shapes/PostItTool.ts`, register it in `customTools`, add it to `uiOverrides` for its label and shortcut, and add a `TldrawUiMenuItem` to the `Toolbar` override so it actually appears (all three in `src/canvas/config.tsx`).
+- **A new custom tool** → copy `src/canvas/shapes/PostItTool.ts`, register it in `customTools`, add it to `uiOverrides` for its label and shortcut, and add a `<ToolbarItem tool="…" />` to the `Toolbar` override so it actually appears (all three in `src/canvas/config.tsx`). That override names every button on the toolbar rather than calling `<DefaultToolbarContent />`, which is what keeps tldraw's own tools off it — they stay registered, and stay on their keyboard shortcuts.
 - **A different way of combining the two strength signals** → add a `CombineStrategy` to `STRATEGIES` in `src/domain/effectiveStrength.ts` and pass it to `buildSpatialContext`. Nothing else needs to know: the name travels with each row, so the JSON says which function produced it. Don't reach for a new `gravity` scale to get amplification — that is what the strategy is for.
 - **Change detection over time** → `diffCanvas(before, after)` in `src/domain/canvasDiff.ts`. Capture documents with `getCanvasDocument(editor)`; it reads the derived layers rather than recomputing them, so it can't disagree with the JSON you already have. For changes as they happen, subscribe to the [event stream](#event-stream) instead of holding your own snapshots.
 - **A new event type** → add it to the `SpatialEvent` union in `src/domain/events.ts` and emit it from `deriveEvents`, which is pure and takes a `CanvasDiff`. If the transition isn't visible in a diff, the gap is in `canvasDiff.ts`, not here — add the change kind or pair delta first, so the event stays a restatement of something a reader could already see in the JSON. Give it a line in `describeEvent` in `src/canvas/ui/EventLogPanel.tsx`; the switch is exhaustive, so TypeScript will fail the build until you do.

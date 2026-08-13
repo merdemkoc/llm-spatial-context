@@ -23,15 +23,15 @@ So the mental model is one direction of trust:
 
 ## Tech stack
 
-| Concern     | Choice                                                                |
-| ----------- | --------------------------------------------------------------------- |
-| UI          | React 19                                                              |
-| Canvas      | tldraw 5.3 (store, persistence, arrows/bindings, `toImage`)           |
-| Build / dev | Vite 8 (`@` → `src/`)                                                 |
-| Language    | TypeScript 5.9, strict, `noEmit`                                      |
-| Tests       | Vitest 4 — `node` env by default, `jsdom` opt-in via docblock         |
-| Lint/format | ESLint 10 (flat config) + Prettier (tabs, no-semi, single, width 100) |
-| Storage     | tldraw IndexedDB `persistenceKey` — no backend                        |
+| Concern     | Choice                                                                            |
+| ----------- | --------------------------------------------------------------------------------- |
+| UI          | React 19; `generative-loaders` for the companion's activity + text-stream loaders |
+| Canvas      | tldraw 5.3 (store, persistence, arrows/bindings, `toImage`)                       |
+| Build / dev | Vite 8 (`@` → `src/`)                                                             |
+| Language    | TypeScript 5.9, strict, `noEmit`                                                  |
+| Tests       | Vitest 4 — `node` env by default, `jsdom` opt-in via docblock                     |
+| Lint/format | ESLint 10 (flat config) + Prettier (tabs, no-semi, single, width 100)             |
+| Storage     | tldraw IndexedDB `persistenceKey` — no backend                                    |
 
 ## Architecture at a glance
 
@@ -194,23 +194,39 @@ Every decision that could put a box in the wrong place lives in a pure function;
 | `main.tsx`                   | React entry point — mounts `<App/>` into `#root`                                                                                                                          | —                                                              |
 | `App.tsx`                    | Thin shell that renders `<Canvas/>`                                                                                                                                       | `App`                                                          |
 | `canvas/Canvas.tsx`          | The `<Tldraw>` wrapper — `persistenceKey`, `onMount` (registers metadata + the event stream, returns a disposer, dev `window.editor` / `spatialEvents` / `seedDemoScene`) | `Canvas`                                                       |
-| `canvas/config.tsx`          | Module-scope registration of shape utils, tools, UI overrides, and custom components                                                                                      | `customShapeUtils`, `customTools`, `uiOverrides`, `components` |
+| `canvas/config.tsx`          | Module-scope registration of shape utils, tools, UI overrides, and custom components — including the four-tool toolbar                                                    | `customShapeUtils`, `customTools`, `uiOverrides`, `components` |
 | `canvas/dev/seedScenario.ts` | Dev-only helper that lays out the MVP 1 §8 demonstration scene (three post-its, one field)                                                                                | `seedDemoScene`                                                |
 | `index.css`                  | Global styles + `tldraw.css` import                                                                                                                                       | —                                                              |
 
 ### `src/canvas/ui/` — React panels & overlays
 
-| File                           | Responsibility                                                                                             | Key exports              |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `InspectorPanel.tsx`           | Live canonical JSON, Copy/Import, grounded-screenshot export, the three strength tables, and the event log | `InspectorPanel`         |
-| `EventLogPanel.tsx`            | Live view of the spatial event stream (newest first, Clear); reads the module-scope singleton              | `EventLogPanel`          |
-| `PostItStylePanel.tsx`         | Custom StylePanel — hosts the contextual-field and gravity controls + colour swatch rows                   | `PostItStylePanel`       |
-| `ContextualFieldControl.tsx`   | Radius input for the selection (draft held, committed on blur/Enter/unmount)                               | `ContextualFieldControl` |
-| `RelationGravityControl.tsx`   | Gravity input for the selected relation arrows (same draft/commit mechanics, no clear)                     | `RelationGravityControl` |
-| `ContextualFieldOverlay.tsx`   | `OnTheCanvas` overlay drawing each node's field as a circle, behind shapes                                 | `ContextualFieldOverlay` |
-| `InfluenceBadges.tsx`          | Per-node `→` / `←` / distance badges for the single selected node                                          | `InfluenceBadges`        |
-| `ContextualFieldToggle.tsx`    | Show/hide switch for the field overlay                                                                     | `ContextualFieldToggle`  |
-| `contextualFieldVisibility.ts` | Module-scope tldraw `atom` shared by the toggle and overlay (not persisted, not canonical)                 | `showContextualFields`   |
+| File                           | Responsibility                                                                                             | Key exports                                                                                                         |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `theme.ts`                     | Panel chrome as tldraw theme tokens — the one place colours, radii, shadows and the mono font are defined  | `panelChrome`, `readoutBox`, `caption`, `panelButton`, `numberInput`, `switchRow`, `MONO`, `FIELD_INK`, `fieldTint` |
+| `InspectorDock.tsx`            | The `SharePanel` rail: the ⋯ popover trigger and the Canonical JSON toggle, with the Inspector beneath     | `InspectorDock`                                                                                                     |
+| `InspectorPanel.tsx`           | Live canonical JSON, Copy/Import, grounded-screenshot export, the three strength tables, and the event log | `InspectorPanel`                                                                                                    |
+| `CompanionBar.tsx`             | The `TopPanel` chip: latest comment, thinking indicator, transcript popover                                | `CompanionBar`                                                                                                      |
+| `ViewSettingsPopover.tsx`      | The ⋯ button and its three switches (fields, observation, voice)                                           | `ViewSettingsPopover`                                                                                               |
+| `EventLogPanel.tsx`            | Live view of the spatial event stream (newest first, Clear); reads the module-scope singleton              | `EventLogPanel`                                                                                                     |
+| `PostItStylePanel.tsx`         | Custom StylePanel — hosts the contextual-field and gravity controls + colour swatch rows                   | `PostItStylePanel`                                                                                                  |
+| `ContextualFieldControl.tsx`   | Radius input for the selection (draft held, committed on blur/Enter/unmount)                               | `ContextualFieldControl`                                                                                            |
+| `RelationGravityControl.tsx`   | Gravity input for the selected relation arrows (same draft/commit mechanics, no clear)                     | `RelationGravityControl`                                                                                            |
+| `ContextualFieldOverlay.tsx`   | `OnTheCanvas` overlay drawing each node's field as a circle, behind shapes                                 | `ContextualFieldOverlay`                                                                                            |
+| `InfluenceBadges.tsx`          | Per-node `→` / `←` / distance badges for the single selected node                                          | `InfluenceBadges`                                                                                                   |
+| `ContextualFieldToggle.tsx`    | Show/hide switch for the field overlay                                                                     | `ContextualFieldToggle`                                                                                             |
+| `contextualFieldVisibility.ts` | Module-scope tldraw `atom` shared by the toggle and overlay (not persisted, not canonical)                 | `showContextualFields`                                                                                              |
+
+### `src/companion/` — the AI observer's loop
+
+Subscribes to the [event stream](./README.md#event-stream), groups events into episodes, and — when a pause reveals a meaningful change — asks the model whether to say something. The model call and the speech synthesis live in `server/` (Hono routes) so the API key never reaches the browser.
+
+| File                | Responsibility                                                                                                                                                                        | Key exports                                                                                         |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `companion.ts`      | The orchestrator: episode → gate → observe → record → speak, with interruption by generation, anti-repetition, and the thinking/utterance handover that keeps text and voice together | `createCompanion`, `DEFAULT_HISTORY_SIZE`, `TRANSCRIPT_LIMIT`                                       |
+| `companionState.ts` | Module-scope tldraw atoms — the two switches, which job the companion is on (`observing` / `composing`), the transcript, and the remark currently being spoken                        | `observationEnabled`, `voiceEnabled`, `companionStage`, `companionTranscript`, `companionUtterance` |
+| `observerClient.ts` | The seam to the model: POST an episode and its context, receive speak/comment                                                                                                         | `ObserverClient`, `createHttpObserverClient`, `OBSERVE_TIMEOUT_MS`                                  |
+| `voiceClient.ts`    | The seam to TTS: POST the text, play the returned audio, and report when playback starts and how far through it is                                                                    | `VoiceClient`, `SpeakOptions`, `createHttpVoiceClient`                                              |
+| `reveal.ts`         | Which words have been said at a given fraction of playback — position-weighted, since the mp3 carries no word timings                                                                 | `spokenPrefix`                                                                                      |
 
 ### Config & tooling (root)
 

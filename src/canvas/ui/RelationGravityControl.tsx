@@ -17,6 +17,7 @@ import {
 	selectedRelationArrowIds,
 	setRelationGravity,
 } from '@/canvas/adapter/relations'
+import { caption, numberInput } from '@/canvas/ui/theme'
 
 /** Several selected relations whose gravities disagree. */
 const MIXED = 'mixed'
@@ -105,8 +106,11 @@ function GravityControl({ selectionKey }: { selectionKey: string }) {
 	const displayed = draft ?? (typeof gravity === 'number' ? String(gravity) : '')
 
 	return (
-		<div className="tlui-style-panel__section" style={{ padding: '4px 8px' }}>
-			<div style={{ fontSize: 11, opacity: 0.6, marginBottom: 4 }}>Relational gravity</div>
+		<div
+			className="tlui-style-panel__section"
+			style={{ padding: 'var(--tl-space-2) var(--tl-space-3)' }}
+		>
+			<div style={{ ...caption, marginBottom: 'var(--tl-space-2)' }}>Relational gravity</div>
 			<input
 				type="number"
 				min={0}
@@ -124,16 +128,9 @@ function GravityControl({ selectionKey }: { selectionKey: string }) {
 					// Otherwise the canvas would read typing as shortcuts.
 					event.stopPropagation()
 				}}
-				style={{
-					width: '100%',
-					minWidth: 0,
-					padding: '2px 4px',
-					borderRadius: 4,
-					border: '1px solid rgba(0, 0, 0, 0.2)',
-					font: 'inherit',
-				}}
+				style={{ ...numberInput, width: '100%' }}
 			/>
-			<div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
+			<div style={{ ...caption, marginTop: 'var(--tl-space-2)' }}>
 				How strongly you say these relate — 0 to 1. Independent of how far apart they are.
 			</div>
 		</div>

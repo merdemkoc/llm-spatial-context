@@ -18,12 +18,15 @@
  */
 import type { CanvasDocument, CanvasNode, NodeId, SpatialInfluence } from '@/domain'
 import { nodeCorners } from '@/canvas/grounding/projection'
+import { MONO_FAMILY, fieldTint } from '@/canvas/ui/theme'
 
 /**
  * Indigo, matching the field circles: the reach and its consequence are one
- * overlay saying one thing, and should read as one thing.
+ * overlay saying one thing, and should read as one thing. Near-opaque, because
+ * these sit over notes whose fill the digits have to stay legible against — so
+ * the tint takes an alpha instead of the shared panel tokens.
  */
-const BADGE_BACKGROUND = 'rgba(91, 91, 214, 0.92)'
+const BADGE_BACKGROUND = fieldTint(0.92)
 const BADGE_TEXT = '#FFFFFF'
 
 const FONT_SIZE = 11
@@ -104,10 +107,10 @@ function InfluenceBadge({ node, outgoing, incoming, zoom }: InfluenceBadgeProps)
 				flexDirection: 'column',
 				alignItems: 'flex-start',
 				padding: '3px 6px',
-				borderRadius: 4,
+				borderRadius: 'var(--tl-radius-1)',
 				background: BADGE_BACKGROUND,
 				color: BADGE_TEXT,
-				font: `${FONT_SIZE}px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace`,
+				font: `${FONT_SIZE}px/1.4 ${MONO_FAMILY}`,
 				whiteSpace: 'nowrap',
 				// Never what a click lands on: the badge floats over the canvas near a
 				// note the user is probably trying to hit.

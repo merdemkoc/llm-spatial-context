@@ -27,14 +27,15 @@ import { selectedPostItIds } from '@/canvas/adapter/contextualField'
 import { shapeIdToNodeId } from '@/canvas/adapter/ids'
 import { InfluenceBadges } from '@/canvas/ui/InfluenceBadges'
 import { showContextualFields } from '@/canvas/ui/contextualFieldVisibility'
+import { FIELD_INK, fieldTint } from '@/canvas/ui/theme'
 
 /**
  * Indigo, and deliberately neither the grounding layer's hot pink nor tldraw's
  * selection blue. Three overlays that mean three different things shouldn't be
- * confusable at a glance.
+ * confusable at a glance. Defined once in `theme.ts`, since the influence badges
+ * and the companion's thinking hint are the same voice speaking.
  */
-const FIELD_COLOR = '#5B5BD6'
-const FIELD_FILL = 'rgba(91, 91, 214, 0.06)'
+const FIELD_FILL = fieldTint(0.06)
 
 /**
  * Screen pixels, divided by the zoom to survive the layer's CSS transform.
@@ -46,7 +47,7 @@ const BORDER_WIDTH = 1.5
 const SELECTED_BORDER_WIDTH = 3
 
 /** Selection reads as a solid, denser ring, so "which field is this?" is instant. */
-const SELECTED_FILL = 'rgba(91, 91, 214, 0.13)'
+const SELECTED_FILL = fieldTint(0.13)
 
 const ID_SEPARATOR = ' '
 
@@ -132,7 +133,7 @@ function FieldCircle({
 				// rather than only in degree, so it survives being zoomed out until
 				// every outline is a hairline.
 				borderStyle: isSelected ? 'solid' : 'dashed',
-				borderColor: FIELD_COLOR,
+				borderColor: FIELD_INK,
 				background: isSelected ? SELECTED_FILL : FIELD_FILL,
 				// The overlay must never be what a click lands on: it covers a large
 				// area and sits above nothing the user is trying to hit.

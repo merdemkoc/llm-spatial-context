@@ -24,6 +24,7 @@
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.116.0",
 		"@hono/node-server": "^2.1.0",
+		"generative-loaders": "^0.1.1",
 		"hono": "^4.13.1",
 		"openai": "^7.4.0",
 		"react": "^19.2.1",

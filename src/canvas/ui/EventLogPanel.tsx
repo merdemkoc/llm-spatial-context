@@ -12,6 +12,7 @@
  */
 import { useEffect, useState } from 'react'
 import { spatialEventStream, type SpatialEvent, type SpatialEventStream } from '@/domain'
+import { caption, panelButton, readoutBox } from '@/canvas/ui/theme'
 
 /** How many events the panel shows. The stream retains more; this is just the window. */
 const VISIBLE = 50
@@ -32,11 +33,11 @@ export function EventLogPanel({ stream = spatialEventStream }: { stream?: Spatia
 	}, [stream])
 
 	return (
-		<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-			<div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+		<div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--tl-space-2)' }}>
+			<div style={{ display: 'flex', gap: 'var(--tl-space-2)', alignItems: 'center' }}>
 				<button
 					onClick={() => setIsOpen(!isOpen)}
-					style={{ ...buttonStyle, flex: 1, textAlign: 'left' }}
+					style={{ ...panelButton, flex: 1, textAlign: 'left' }}
 				>
 					{isOpen ? '▾' : '▸'} Event stream · {events.length} event{events.length === 1 ? '' : 's'}
 				</button>
@@ -45,16 +46,18 @@ export function EventLogPanel({ stream = spatialEventStream }: { stream?: Spatia
 						stream.clear()
 						setEvents([])
 					}}
-					style={buttonStyle}
+					style={panelButton}
 				>
 					Clear
 				</button>
 			</div>
 
 			{isOpen && (
-				<div style={{ ...preStyle, minHeight: 0, maxHeight: 200 }}>
+				// The log scrolls, so its wheel events must not reach the canvas — otherwise
+				// reading back what happened zooms the drawing.
+				<div onWheel={(event) => event.stopPropagation()} style={{ ...readoutBox, maxHeight: 200 }}>
 					{events.length === 0 ? (
-						<span style={{ opacity: 0.6 }}>
+						<span style={caption}>
 							Nothing yet. Move a post-it across another’s contextual field, or draw a{' '}
 							<strong>Relation</strong>, and the change shows up here as an event.
 						</span>
@@ -63,8 +66,10 @@ export function EventLogPanel({ stream = spatialEventStream }: { stream?: Spatia
 							<tbody>
 								{events.map((event, index) => (
 									<tr key={index} style={{ verticalAlign: 'top' }}>
-										<td style={{ whiteSpace: 'nowrap', paddingRight: 8 }}>{event.type}</td>
-										<td style={{ opacity: 0.7 }}>{describeEvent(event)}</td>
+										<td style={{ whiteSpace: 'nowrap', paddingRight: 'var(--tl-space-3)' }}>
+											{event.type}
+										</td>
+										<td style={{ color: 'var(--tl-color-text-3)' }}>{describeEvent(event)}</td>
 									</tr>
 								))}
 							</tbody>
@@ -105,23 +110,4 @@ function describeEvent(event: SpatialEvent): string {
 		case 'proximity_changed':
 			return `${event.source}→${event.target} · ${event.level} · infl ${event.previous.influence.toFixed(2)} → ${event.current.influence.toFixed(2)}`
 	}
-}
-
-const buttonStyle: React.CSSProperties = {
-	padding: '4px 8px',
-	borderRadius: 4,
-	border: '1px solid rgba(0, 0, 0, 0.2)',
-	background: 'var(--tl-color-panel, #fff)',
-	cursor: 'pointer',
-	font: 'inherit',
-}
-
-const preStyle: React.CSSProperties = {
-	margin: 0,
-	padding: 8,
-	overflow: 'auto',
-	borderRadius: 4,
-	border: '1px solid rgba(0, 0, 0, 0.1)',
-	background: 'var(--tl-color-muted-2, #f9f9f9)',
-	font: 'inherit',
 }
