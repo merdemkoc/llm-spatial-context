@@ -25,13 +25,19 @@ import {
 import {
 	calculateSpatialInfluence,
 	createPostItNode,
+	nodeCenter,
 	type CanvasDocument,
 	type CanvasNode,
 } from '@/domain'
 import { PostItShapeUtil } from '@/canvas/shapes/PostItShapeUtil'
 import { POST_IT_SHAPE_TYPE } from '@/canvas/shapes/postItShape'
+import { postItAt } from '@/canvas/shapes/PostItTool'
 import { contextualFieldPatch, nodeToShape } from '@/canvas/adapter/adapter'
-import { selectedPostItIds, setContextualFieldRadius } from '@/canvas/adapter/contextualField'
+import {
+	selectedPostItIds,
+	setContextualFieldRadius,
+	SUGGESTED_RADIUS,
+} from '@/canvas/adapter/contextualField'
 import { getCanvasDocument } from '@/canvas/adapter/canvasView'
 import { registerNodeMetadata } from '@/canvas/adapter/metadata'
 import { nodeIdToShapeId } from '@/canvas/adapter/ids'
@@ -498,5 +504,28 @@ describe('influence over a live canvas', () => {
 
 		expect(calculateSpatialInfluence(readNode('a'), readNode('b'))).toBeCloseTo(0.8)
 		expect(calculateSpatialInfluence(readNode('b'), readNode('a'))).toBeCloseTo(0.5)
+	})
+})
+
+describe('the node the post-it tool drops', () => {
+	it('opens with a contextual field, so a new note reaches somewhere', () => {
+		// Without this a note arrived with no field, drew no circle, influenced nothing, and
+		// the one idea this prototype demonstrates was invisible until you found the panel.
+		expect(postItAt({ x: 0, y: 0 }).contextualField).toEqual({ radius: SUGGESTED_RADIUS })
+	})
+
+	it('centres the note on the click', () => {
+		const node = postItAt({ x: 500, y: 400 })
+
+		expect(nodeCenter(node)).toEqual({ x: 500, y: 400 })
+	})
+
+	it('is a real canonical node, field and all, once projected and read back', () => {
+		const node = postItAt({ x: 120, y: 80 })
+		editor.createShape({ ...nodeToShape(node), parentId: editor.getCurrentPageId() })
+
+		expect(getCanvasDocument(editor).nodes[node.id].contextualField).toEqual({
+			radius: SUGGESTED_RADIUS,
+		})
 	})
 })

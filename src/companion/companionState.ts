@@ -20,8 +20,18 @@ export const observationEnabled = atom('companion observation enabled', true)
 /** Whether a spoken comment is played aloud. Off still fills the transcript. */
 export const voiceEnabled = atom('companion voice enabled', true)
 
-/** True while the model is deciding whether to speak — drives the "✦ Agent thinking…" hint. */
-export const companionThinking = atom('companion thinking', false)
+/**
+ * What the companion is busy with, if anything — the state behind the "✦ Agent…" hint.
+ *
+ * Two working stages rather than one boolean, because the wait is two jobs and takes about
+ * five seconds end to end: `observing` is the model deciding whether this change is worth a
+ * remark (~3s), `composing` is the sentence being turned into a voice (~2s). Naming them
+ * separately is what lets the hint say which one it is in instead of showing the same frozen
+ * line for both.
+ */
+export type CompanionStage = 'idle' | 'observing' | 'composing'
+
+export const companionStage = atom<CompanionStage>('companion stage', 'idle')
 
 /** One spoken (or would-be-spoken) observation, with the moment it was made. */
 export interface TranscriptEntry {
@@ -31,3 +41,20 @@ export interface TranscriptEntry {
 
 /** Recent comments, oldest first. The companion appends; the panel and anti-repetition read. */
 export const companionTranscript = atom<TranscriptEntry[]>('companion transcript', [])
+
+/** A remark being spoken right now, and how far through it the voice has got (0–1). */
+export interface Utterance {
+	comment: string
+	fraction: number
+}
+
+/**
+ * What the companion is saying *as* it says it, or `null` between remarks.
+ *
+ * Separate from the transcript because the two answer different questions. The transcript
+ * is the record — what was decided, kept even when voice is off or playback fails. This is
+ * the performance: it exists only while a clip is playing, and it carries the position the
+ * bar reveals words against, so the sentence arrives with the sound instead of a synthesis
+ * ahead of it. Not persisted, not canonical; `spokenPrefix` in `reveal.ts` does the mapping.
+ */
+export const companionUtterance = atom<Utterance | null>('companion utterance', null)

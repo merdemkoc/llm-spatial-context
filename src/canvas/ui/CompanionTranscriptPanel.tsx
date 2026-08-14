@@ -8,19 +8,20 @@
  */
 import { useValue } from 'tldraw'
 import { companionTranscript } from '@/companion/companionState'
+import { caption, readoutBox } from '@/canvas/ui/theme'
 
 export function CompanionTranscriptPanel() {
 	const transcript = useValue(companionTranscript)
 	const newestFirst = [...transcript].reverse()
 
 	return (
-		<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-			<span style={{ opacity: 0.7, font: 'inherit' }}>
+		<div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--tl-space-2)' }}>
+			<span style={caption}>
 				✦ Companion · {transcript.length} comment{transcript.length === 1 ? '' : 's'}
 			</span>
-			<div style={preStyle}>
+			<div style={{ ...readoutBox, maxHeight: 220 }}>
 				{newestFirst.length === 0 ? (
-					<span style={{ opacity: 0.6 }}>
+					<span style={caption}>
 						Nothing said yet. Move ideas together, draw a <strong>Relation</strong>, or pull them
 						apart, and the companion’s observations show up here.
 					</span>
@@ -32,7 +33,7 @@ export function CompanionTranscriptPanel() {
 							listStyle: 'none',
 							display: 'flex',
 							flexDirection: 'column',
-							gap: 6,
+							gap: 'var(--tl-space-2)',
 						}}
 					>
 						{newestFirst.map((entry) => (
@@ -43,15 +44,4 @@ export function CompanionTranscriptPanel() {
 			</div>
 		</div>
 	)
-}
-
-const preStyle: React.CSSProperties = {
-	margin: 0,
-	padding: 8,
-	maxHeight: 160,
-	overflow: 'auto',
-	borderRadius: 4,
-	border: '1px solid rgba(0, 0, 0, 0.1)',
-	background: 'var(--tl-color-muted-2, #f9f9f9)',
-	font: '12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace',
 }

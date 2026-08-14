@@ -6,11 +6,9 @@
  * by identity, so rebuilding them on every render would remount the editor.
  */
 import {
+	CenteredTopPanelContainer,
 	DefaultToolbar,
-	DefaultToolbarContent,
-	TldrawUiMenuItem,
-	useIsToolSelected,
-	useTools,
+	ToolbarItem,
 	type TLComponents,
 	type TLUiOverrides,
 } from 'tldraw'
@@ -19,12 +17,9 @@ import { PostItTool } from '@/canvas/shapes/PostItTool'
 import { RelationTool, RELATION_TOOL_ID } from '@/canvas/shapes/RelationTool'
 import { POST_IT_SHAPE_TYPE } from '@/canvas/shapes/postItShape'
 import { PostItStylePanel } from '@/canvas/ui/PostItStylePanel'
-import { InspectorPanel } from '@/canvas/ui/InspectorPanel'
+import { InspectorDock } from '@/canvas/ui/InspectorDock'
+import { CompanionBar } from '@/canvas/ui/CompanionBar'
 import { ContextualFieldOverlay } from '@/canvas/ui/ContextualFieldOverlay'
-import { ContextualFieldToggle } from '@/canvas/ui/ContextualFieldToggle'
-import { CompanionControls } from '@/canvas/ui/CompanionControls'
-import { AgentThinkingIndicator } from '@/canvas/ui/AgentThinkingIndicator'
-import { CompanionTranscriptPanel } from '@/canvas/ui/CompanionTranscriptPanel'
 
 export const customShapeUtils = [PostItShapeUtil]
 
@@ -43,16 +38,17 @@ export const uiOverrides: TLUiOverrides = {
 				onSelect: () => editor.setCurrentTool(POST_IT_SHAPE_TYPE),
 			},
 			/**
-			 * Draws the same shape as the arrow tool beside it. The difference is the
-			 * claim: an arrow drawn here lands in `relations`, one drawn with the arrow
-			 * tool stays decoration.
+			 * Draws the same shape as the plain arrow tool. The difference is the claim:
+			 * an arrow drawn here lands in `relations`, one drawn with the arrow tool
+			 * stays decoration.
 			 */
 			[RELATION_TOOL_ID]: {
 				id: RELATION_TOOL_ID,
 				label: 'Relation',
-				// A curved arrow rather than `tool-arrow`: this sits two places from the
-				// real arrow tool on the toolbar, and with the same icon the two are
-				// indistinguishable — which matters when only one of them means anything.
+				// A curved arrow rather than `tool-arrow`. The plain arrow tool is off the
+				// toolbar but still live on `a`, and the arrows it draws mean nothing — so
+				// the two still need to look different wherever they appear side by side,
+				// like the keyboard-shortcuts dialog.
 				icon: 'arrow-arc',
 				kbd: 'r',
 				onSelect: () => editor.setCurrentTool(RELATION_TOOL_ID),
@@ -63,43 +59,75 @@ export const uiOverrides: TLUiOverrides = {
 
 export const components: TLComponents = {
 	/**
-	 * Registering a tool doesn't put it on the toolbar — the toolbar renders a
-	 * fixed list. Override it to add our own entry ahead of the defaults.
+	 * The toolbar renders a fixed list rather than everything registered, so this
+	 * override is what puts our two tools on it — and, by naming the list itself
+	 * instead of `<DefaultToolbarContent />`, what keeps tldraw's own entries off.
+	 *
+	 * Only four tools describe anything the canonical model knows about: a post-it
+	 * is a Node, a relation is a Relation, and pointer and hand are how you read
+	 * the canvas. A rectangle or a laser pointer would be a mark the model cannot
+	 * account for, so offering one is an invitation to work the prototype can't
+	 * hear. The rest stay registered and stay on their keyboard shortcuts — this
+	 * hides buttons, it doesn't remove tools.
 	 */
-	Toolbar: (props) => {
-		const tools = useTools()
-		const isPostItSelected = useIsToolSelected(tools[POST_IT_SHAPE_TYPE])
-		const isRelationSelected = useIsToolSelected(tools[RELATION_TOOL_ID])
-
-		return (
-			<DefaultToolbar {...props}>
-				<TldrawUiMenuItem {...tools[POST_IT_SHAPE_TYPE]} isSelected={isPostItSelected} />
-				<TldrawUiMenuItem {...tools[RELATION_TOOL_ID]} isSelected={isRelationSelected} />
-				<DefaultToolbarContent />
-			</DefaultToolbar>
-		)
-	},
+	Toolbar: (props) => (
+		<DefaultToolbar {...props}>
+			<ToolbarItem tool="select" />
+			<ToolbarItem tool="hand" />
+			<ToolbarItem tool={POST_IT_SHAPE_TYPE} />
+			<ToolbarItem tool={RELATION_TOOL_ID} />
+			{/* tldraw's own tools, in its default order. Uncomment a line to put one back.
+			<ToolbarItem tool="draw" />
+			<ToolbarItem tool="eraser" />
+			<ToolbarItem tool="arrow" />
+			<ToolbarItem tool="text" />
+			<ToolbarItem tool="note" />
+			<ToolbarItem tool="rectangle" />
+			<ToolbarItem tool="ellipse" />
+			<ToolbarItem tool="triangle" />
+			<ToolbarItem tool="diamond" />
+			<ToolbarItem tool="hexagon" />
+			<ToolbarItem tool="oval" />
+			<ToolbarItem tool="rhombus" />
+			<ToolbarItem tool="star" />
+			<ToolbarItem tool="cloud" />
+			<ToolbarItem tool="heart" />
+			<ToolbarItem tool="x-box" />
+			<ToolbarItem tool="check-box" />
+			<ToolbarItem tool="arrow-left" />
+			<ToolbarItem tool="arrow-up" />
+			<ToolbarItem tool="arrow-down" />
+			<ToolbarItem tool="arrow-right" />
+			<ToolbarItem tool="line" />
+			<ToolbarItem tool="highlight" />
+			<ToolbarItem tool="laser" />
+			<ToolbarItem tool="frame" />
+			The media picker is the exception: it takes tldraw's own `<AssetToolbarItem />`,
+			since `asset` opens a file dialog rather than becoming the current tool. */}
+		</DefaultToolbar>
+	),
 
 	StylePanel: PostItStylePanel,
 
 	/**
-	 * Stacked rather than merged into the Inspector's own header: that component
-	 * renders two different trees depending on whether it's open, and the field
-	 * switch has to be visible either way.
+	 * The top-right corner. tldraw renders this zone above the style panel in one
+	 * column, so what lives here decides how far down the screen the style panel
+	 * starts: a rail of two buttons rather than a stack of five cards.
 	 */
-	SharePanel: () => (
-		<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-			<ContextualFieldToggle />
-			<CompanionControls />
-			<AgentThinkingIndicator />
-			<div
-				onPointerDown={(event) => event.stopPropagation()}
-				style={{ width: 280, padding: 8, pointerEvents: 'all' }}
-			>
-				<CompanionTranscriptPanel />
-			</div>
-			<InspectorPanel />
-		</div>
+	SharePanel: InspectorDock,
+
+	/**
+	 * The top-centre zone, which tldraw leaves empty and we give to the companion —
+	 * the one part of this UI that speaks without being asked.
+	 *
+	 * `CenteredTopPanelContainer` is tldraw's own: it measures the left and right zones
+	 * and squeezes itself rather than sliding under them, so the bar never collides with
+	 * the menu or with the Inspector rail.
+	 */
+	TopPanel: () => (
+		<CenteredTopPanelContainer maxWidth={460}>
+			<CompanionBar />
+		</CenteredTopPanelContainer>
 	),
 
 	/**

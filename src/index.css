@@ -1,7 +1,28 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;700&display=swap');
+/*
+ * tldraw's stylesheet carries the whole theme — the `--tl-color-*`, `--tl-space-*`,
+ * `--tl-radius-*` and `--tl-shadow-*` custom properties our panels are built from, in
+ * both light and dark. Everything else our UI needs is inline, in `canvas/ui/theme.ts`.
+ *
+ * **The UI font is ours to supply.** tldraw's own `tldraw_*` faces are for shape text —
+ * what a post-it is written in — and its chrome deliberately inherits whatever the page
+ * sets. Delete the rule below and every menu, button and tooltip falls back to the
+ * browser's default serif. That is not hypothetical: this was once removed as unused,
+ * because nothing names Inter anywhere, which is precisely how an inherited default
+ * works. Our own panels set `font: MONO` explicitly, so a broken chrome font showed up
+ * everywhere *except* the readouts.
+ */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
 @import url('tldraw/tldraw.css');
 
 body {
-	font-family: 'Inter', sans-serif;
+	/* System faces behind it, so the chrome is right before the webfont arrives — and
+	   stays right if it never does. */
+	font-family:
+		'Inter',
+		ui-sans-serif,
+		system-ui,
+		-apple-system,
+		'Segoe UI',
+		sans-serif;
 	overscroll-behavior: none;
 }

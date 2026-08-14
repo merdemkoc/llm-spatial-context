@@ -18,6 +18,14 @@
  *   - **Anti-repetition.** The last few spoken comments ride along with each request so
  *     the model can vary its phrasing instead of narrating the same trend every pause.
  *
+ * **Text arrives with the voice.** Deciding what to say and synthesizing it are two waits,
+ * a second or three each. Announcing the remark after the first one meant the user read it,
+ * finished, and only then heard it read aloud — so the thinking hint stays up through
+ * synthesis and the words are released as playback reports them (`companionUtterance`). The
+ * transcript is still written before playback, because it is the record of what the
+ * companion decided rather than a view of what it is currently saying: with voice off, or
+ * when synthesis fails, the observation must survive either way.
+ *
  * The clients and the timer are injected; nothing here reaches the network directly.
  */
 import {
@@ -30,8 +38,9 @@ import {
 import type { EpisodeContext, ObserverClient } from '@/companion/observerClient'
 import type { VoiceClient } from '@/companion/voiceClient'
 import {
-	companionThinking,
+	companionStage,
 	companionTranscript,
+	companionUtterance,
 	observationEnabled,
 	voiceEnabled,
 } from '@/companion/companionState'
@@ -106,7 +115,11 @@ export function createCompanion({
 		inFlight?.abort()
 		const controller = new AbortController()
 		inFlight = controller
-		companionThinking.set(true)
+		companionStage.set('observing')
+		// The previous remark's performance is over the moment a newer thought starts: its
+		// half-revealed sentence must not resurface behind this one, least of all if this one
+		// turns out to be silence. The transcript still has it whole.
+		companionUtterance.set(null)
 
 		let decision = null as Awaited<ReturnType<ObserverClient['observe']>> | null
 		try {
@@ -130,22 +143,59 @@ export function createCompanion({
 		if (disposed) return
 
 		inFlight = null
-		companionThinking.set(false)
 
-		if (!decision || !decision.speak || !decision.comment) return
+		const silent = !decision || !decision.speak || !decision.comment
 		// Re-read the switch rather than trusting the check made before the await: a user
 		// who switches observation off mid-thought is asking not to be spoken to, and the
 		// answer in hand was authorised by a setting that no longer holds.
-		if (!observationEnabled.get()) return
+		if (silent || !observationEnabled.get()) {
+			companionStage.set('idle')
+			return
+		}
+
+		const comment = decision!.comment!
 
 		// Record before speaking so the transcript fills even with voice off, and so a
 		// playback failure can't lose the observation.
-		record(decision.comment)
-		if (voiceEnabled.get()) {
-			try {
-				await voice.speak(decision.comment)
-			} catch {
-				// A blocked or failed playback shouldn't take down the loop.
+		record(comment)
+
+		if (!voiceEnabled.get()) {
+			// Nothing to wait for, so the remark is the whole remark, immediately.
+			companionStage.set('idle')
+			return
+		}
+
+		/** Ours only until a newer episode takes over, or the companion is torn down. */
+		const owns = () => mine === generation && !disposed
+
+		// The second half of the wait, and a different job: the sentence exists, and now a
+		// voice for it is being rendered. Saying so is the difference between a hint that
+		// looks stuck and one that reports progress.
+		companionStage.set('composing')
+
+		try {
+			await voice.speak(comment, {
+				onStart: () => {
+					if (!owns()) return
+					// The hint comes down exactly as the voice comes up: one hands over to
+					// the other, so there is never a silent sentence sitting on screen.
+					companionStage.set('idle')
+					companionUtterance.set({ comment, fraction: 0 })
+				},
+				onProgress: (fraction) => {
+					if (!owns()) return
+					// Done speaking: drop the utterance so the bar falls back to the
+					// transcript's newest entry, which is this same sentence in full.
+					if (fraction >= 1) companionUtterance.set(null)
+					else companionUtterance.set({ comment, fraction })
+				},
+			})
+		} catch {
+			// A blocked or failed playback shouldn't take down the loop — but it must not
+			// leave the remark hidden behind a thinking hint that will never clear either.
+			if (owns()) {
+				companionStage.set('idle')
+				companionUtterance.set(null)
 			}
 		}
 	}
@@ -164,6 +214,7 @@ export function createCompanion({
 		// Abort only cancels a request; a clip already speaking has to be silenced, or the
 		// companion keeps talking after the canvas it was describing is gone.
 		voice.stop()
-		companionThinking.set(false)
+		companionStage.set('idle')
+		companionUtterance.set(null)
 	}
 }

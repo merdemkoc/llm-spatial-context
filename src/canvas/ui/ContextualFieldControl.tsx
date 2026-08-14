@@ -7,14 +7,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useEditor, useValue, type Editor, type TLShapeId } from 'tldraw'
 import { readNodeContextualField } from '@/canvas/adapter/adapter'
-import { selectedPostItIds, setContextualFieldRadius } from '@/canvas/adapter/contextualField'
-
-/**
- * Suggested starting radius for a field the user is switching on. It lives here
- * and not in `src/domain` on purpose: the model must never apply a radius
- * implicitly, so this is a UI convenience and nothing more.
- */
-export const SUGGESTED_RADIUS = 500
+import {
+	selectedPostItIds,
+	setContextualFieldRadius,
+	SUGGESTED_RADIUS,
+} from '@/canvas/adapter/contextualField'
+import { caption, numberInput, panelButton } from '@/canvas/ui/theme'
 
 /** Several selected post-its whose radii disagree. */
 const MIXED = 'mixed'
@@ -121,9 +119,12 @@ function RadiusControl({ selectionKey }: { selectionKey: string }) {
 	const displayed = draft ?? (typeof radius === 'number' ? String(radius) : '')
 
 	return (
-		<div className="tlui-style-panel__section" style={{ padding: '4px 8px' }}>
-			<div style={{ fontSize: 11, opacity: 0.6, marginBottom: 4 }}>Contextual field radius</div>
-			<div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+		<div
+			className="tlui-style-panel__section"
+			style={{ padding: 'var(--tl-space-2) var(--tl-space-3)' }}
+		>
+			<div style={{ ...caption, marginBottom: 'var(--tl-space-2)' }}>Contextual field radius</div>
+			<div style={{ display: 'flex', gap: 'var(--tl-space-2)', alignItems: 'center' }}>
 				<input
 					type="number"
 					min={0}
@@ -140,14 +141,7 @@ function RadiusControl({ selectionKey }: { selectionKey: string }) {
 						// Otherwise the canvas would read typing as shortcuts.
 						event.stopPropagation()
 					}}
-					style={{
-						flex: 1,
-						minWidth: 0,
-						padding: '2px 4px',
-						borderRadius: 4,
-						border: '1px solid rgba(0, 0, 0, 0.2)',
-						font: 'inherit',
-					}}
+					style={{ ...numberInput, flex: 1 }}
 				/>
 				<button
 					title={
@@ -157,14 +151,7 @@ function RadiusControl({ selectionKey }: { selectionKey: string }) {
 					}
 					onPointerDown={(event) => event.stopPropagation()}
 					onClick={() => commit(radius === null ? SUGGESTED_RADIUS : null)}
-					style={{
-						padding: '2px 6px',
-						borderRadius: 4,
-						border: '1px solid rgba(0, 0, 0, 0.2)',
-						background: 'transparent',
-						cursor: 'pointer',
-						font: 'inherit',
-					}}
+					style={{ ...panelButton, padding: '2px var(--tl-space-3)' }}
 				>
 					{radius === null ? 'Add' : 'Clear'}
 				</button>
