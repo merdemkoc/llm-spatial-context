@@ -3,8 +3,8 @@
  *
  * The other Inspector sections show the canvas *now*; this shows what just *changed* —
  * the structured events a move, a radius edit or an arrow produced, newest first. It is
- * the observable form of the stream the spec calls for: the same records a future AI
- * observer would consume, made visible so the "user action → spatial change → event"
+ * the observable form of the stream the spec calls for: the same records the AI
+ * companion consumes, made visible so the "user action → spatial change → event"
  * chain can be watched happening.
  *
  * A view over the stream, holding no truth of its own. The stream is a prop, defaulting

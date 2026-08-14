@@ -2,7 +2,9 @@
 
 An experiment in giving an LLM **grounded spatial context** about a [tldraw](https://tldraw.dev) infinite canvas. A canonical model describes _what exists_ on the canvas — nodes, their geometry, and what the user explicitly connected — across four deliberately-separated layers, so a reader (a person or a model) can reach the same entity **semantically** (its text), **spatially** (where it sits and what its field reaches), **relationally** (what the user connected, named, and how strongly), and **visually** (which pixels of a screenshot it occupies). Derived data is never stored, and proximity never silently becomes a relation. The two strength signals — spatial influence and relational gravity — are combined into a single ranking number only in a third layer that carries both of its inputs and names the function it used, so they are never _conflated_.
 
-Built on tldraw, Vite, React 19 and TypeScript.
+On top of that model sits the part the rest of it was for: an [AI companion](#the-ai-companion) that watches the representation change, groups the changes into episodes, and speaks only when it judges one worth remarking on.
+
+Built on tldraw, Vite, React 19 and TypeScript, with a two-route Hono server for the companion's model and voice calls.
 
 ![The canvas with contextual-field overlays, influence badges, and the live canonical-JSON inspector](docs/images/inspector-hero.png)
 
@@ -19,6 +21,7 @@ Built on tldraw, Vite, React 19 and TypeScript.
   - [Effective strength](#effective-strength)
   - [Change detection](#change-detection)
   - [Event stream](#event-stream)
+  - [The AI companion](#the-ai-companion)
   - [Grounded screenshot](#grounded-screenshot)
 - [Layout](#layout)
 - [Where to add things](#where-to-add-things)
@@ -32,11 +35,25 @@ For a file-by-file map of the code — every module, its key exports, and the te
 
 ## Why this exists
 
-I started from one question:
+The claim underneath this prototype is that **representation might not just be the output of thinking — it might be part of the thinking itself.** When someone moves an idea closer to another, groups a few together, or draws a line between two of them, what changes is often not the content but the arrangement. So the question is:
 
-> **What changes when a 2D canvas is not treated merely as a visual interface, but as a structured representation of human thought that an AI can directly reason over?**
+> **What happens if an AI can observe that representation directly — and share it?**
 
-Answering it means breaking a canvas into signals and keeping them apart, because they are not the same kind of evidence:
+The building blocks are deliberately few. Two of them are not built yet, and are marked rather than implied:
+
+| Primitive              | What it carries                                                | Where it lives                    | Status         |
+| ---------------------- | -------------------------------------------------------------- | --------------------------------- | -------------- |
+| **Ideas**              | The content of a thought — a note, a question, a claim         | `nodes[].content`                 | Built          |
+| **Images**             | Thinking isn't only words: a photo, a reference, a visual idea | —                                 | **Planned**    |
+| **Semantic relations** | The connection the user drew, and what they called it          | `relations`                       | Built          |
+| **Spatial relations**  | Distance, proximity, grouping — arrangement as a signal        | `spatialContext.influences`       | Built          |
+| **Context**            | The field around an idea, rather than the idea alone           | `contextualField.radius`          | Built          |
+| **Attention**          | What the user selects, focuses on, is working on               | —                                 | **Planned**    |
+| **Change**             | How all of the above evolves while someone thinks              | the [event stream](#event-stream) | Built, spatial |
+
+`NodeType` has exactly one concrete member, `post_it`, so **image nodes are planned** — the Node abstraction takes more, nothing has been added to it. **Attention is planned** too, and it is the more interesting gap: selecting a note changes what the canvas _shows_ you, but selection never enters `CanvasDocument`, emits no event, and never reaches the observer. **Change is built, but only its spatial half** — a text edit produces no event, deliberately.
+
+The three primitives that are built are not the same kind of evidence, and the design's first commitment is that they never collapse into one:
 
 ```mermaid
 graph TD
@@ -74,13 +91,18 @@ The canvas below reproduces that structure — nothing from the sessions themsel
 
 ![Four post-its exported as a grounded screenshot, outlined in pink and labelled N1 to N4, with two relation arrows — one labelled 'constrains' — connecting separate pairs](docs/images/gravity-canvas-grounded.png)
 
-Where this is pointed — no AI is built:
+None of that is a static picture, though, and the part I find most interesting is that it isn't. A representation is not something you arrive at — it changes while you think, and for an AI the useful signal may be the _process of change_ rather than the final state. So change is observable too: `diffCanvas` compares two documents, `deriveEvents` restates the difference as an ordered [event stream](#event-stream), and the stream is grouped into **episodes** — everything between one pause and the next.
 
-- a canvas as a **spatial computational substrate** rather than a rendering surface, where structure comes from configuration rather than containment;
-- an AI **observing how the representation changes** as the user works — a node moved, an arrow drawn — rather than answering prompts. The [event stream](#event-stream) such an observer would subscribe to now exists; nothing subscribes to it, and a text edit still produces no event;
-- that AI **writing entities and relations back** into the space it is reasoning about.
+The [AI companion](#the-ai-companion) is what consumes it. It watches the representation change, decides whether anything meaningful happened, and speaks only when it thinks so — silence is the normal outcome. That closes the loop, but it closes it **through the human**: the companion can observe the representation and talk about it, and cannot yet reach into it.
 
-The prototype deliberately attempts none of the reasoning half. It establishes a substrate those questions can be tested on. The full research note — the argument, the Gemini tests and the trajectory — is in [`docs/why.md`](./docs/why.md).
+Still open, in rough order of interest:
+
+- **attention and image nodes** — the two primitives above with no implementation behind them;
+- **semantic change** — a text edit reaches neither the stream nor the observer, so the model sees you rearrange ideas but not rewrite them;
+- **the AI writing entities and relations back** into the space it is reasoning about;
+- a canvas as a **spatial computational substrate** rather than a rendering surface, where structure comes from configuration rather than containment.
+
+The full research note — the argument, the primitives, the Gemini tests and where this points — is in [`docs/why.md`](./docs/why.md).
 
 ## Getting started
 
@@ -88,10 +110,13 @@ Requires Node `>=22.12.0` (a tldraw SDK requirement).
 
 ```bash
 npm install
+cp .env.example .env   # add the two API keys — see below
 npm run dev
 ```
 
-Open http://localhost:5173.
+Open http://localhost:5173. `npm run dev` runs two processes under `concurrently`: Vite on `5173`, and the [companion's](#the-ai-companion) API server on `8787`, which Vite proxies `/api/*` to.
+
+Those two keys are what the companion needs — `ANTHROPIC_API_KEY` for the observer that interprets spatial change, `OPENAI_API_KEY` for the voice that reads its remarks aloud. They are read by `server/` and never shipped to the browser, which is the only reason a repo that was deliberately backend-free has a backend at all. **Everything else works without them**: with no keys the canvas, the canonical JSON, the event stream and the grounded export are untouched, and the companion degrades to silence rather than to an error.
 
 ![The toolbar: four buttons — pointer, hand, Post-it and Relation](docs/images/toolbar.png)
 
@@ -112,18 +137,21 @@ Chrome is built from tldraw's own tokens (`--tl-color-*`, `--tl-space-*`, `--tl-
 
 ## Scripts
 
-| Script                 | Does                                                 |
-| ---------------------- | ---------------------------------------------------- |
-| `npm run dev`          | Vite dev server with HMR (`--host`, also on the LAN) |
-| `npm run build`        | Typecheck, then production build to `dist/`          |
-| `npm run preview`      | Serve the production build locally                   |
-| `npm run typecheck`    | `tsc --noEmit`                                       |
-| `npm test`             | Vitest, single run                                   |
-| `npm run test:watch`   | Vitest in watch mode                                 |
-| `npm run lint`         | ESLint over the repo                                 |
-| `npm run lint:fix`     | ESLint with autofix                                  |
-| `npm run format`       | Prettier write                                       |
-| `npm run format:check` | Prettier check (no writes)                           |
+| Script                 | Does                                                        |
+| ---------------------- | ----------------------------------------------------------- |
+| `npm run dev`          | Both of the next two, together, with prefixed output        |
+| `npm run dev:web`      | Vite dev server with HMR (`--host`, also on the LAN)        |
+| `npm run dev:api`      | The companion's server on `PORT` (8787), watched by `tsx`   |
+| `npm run build`        | Typecheck client + server, then production build to `dist/` |
+| `npm run preview`      | Serve the production build locally                          |
+| `npm start`            | Run the server against a built `dist/` — one process        |
+| `npm run typecheck`    | `tsc --noEmit`, for both tsconfigs                          |
+| `npm test`             | Vitest, single run                                          |
+| `npm run test:watch`   | Vitest in watch mode                                        |
+| `npm run lint`         | ESLint over the repo                                        |
+| `npm run lint:fix`     | ESLint with autofix                                         |
+| `npm run format`       | Prettier write                                              |
+| `npm run format:check` | Prettier check (no writes)                                  |
 
 ## Architecture
 
@@ -416,7 +444,7 @@ Three decisions are worth naming:
 
 ### Event stream
 
-[`diffCanvas`](#change-detection) answers _what is different_ between two canvases. The event stream answers the next question — _what just happened_ — as an ordered, subscribable sequence a debug panel can render one line at a time, and a future AI observer (MVP 2) can consume without ever reconstructing spatial state from a screenshot.
+[`diffCanvas`](#change-detection) answers _what is different_ between two canvases. The event stream answers the next question — _what just happened_ — as an ordered, subscribable sequence a debug panel can render one line at a time, and [the companion](#the-ai-companion) consumes without ever reconstructing spatial state from a screenshot.
 
 It adds no new truth. `deriveEvents(diff)` restates a diff's two lists as events: the eight change kinds become **structural events**, and each pair's influence delta is _classified_ into the **spatial events** the diff carries but does not name.
 
@@ -435,6 +463,58 @@ The stream itself is deliberately small: an in-process, subscribable buffer, **n
 ![The event stream after the walkthrough: B dragged out of range with influence 0, the A→B relation intact at gravity 1.00, and field_exited / node_moved / relation_created in the event log](docs/images/event-stream.png)
 
 The panel shows all three signals diverging at once: spatial influence `A → B` is `0.000` at distance `1500`, yet relational gravity holds at `1.00` and effective strength stays `0.750`. The event log records how it got there — `relation_created`, then `field_exited` with `infl 0.70 → 0.00` — and never a `relation_deleted`, because moving a node cannot revoke a claim the user made. Proximity and intent are independent, and the stream reports them independently.
+
+### The AI companion
+
+The stream was built for one consumer, and this is it. `src/companion/` subscribes, groups events into episodes, and — when a pause reveals a change worth interpreting — asks a model whether there is anything to say. It is the only part of the app that speaks without being asked.
+
+```mermaid
+flowchart LR
+    stream[["spatialEventStream"]] --> rec["createEpisodeRecorder<br/><i>2s idle → fold</i>"]
+    rec --> gate{"isTrivialEpisode"}
+    gate -.->|"trivial"| quiet["silence"]
+    gate -->|"worth asking"| ctx["readEpisodeContext<br/><i>ids → note text</i>"]
+    ctx --> obs["/api/observe<br/><i>claude-sonnet-5</i>"]
+    obs -.->|"speak: false"| quiet
+    obs -->|"speak: true"| tx["transcript"]
+    tx --> spk["/api/speak<br/><i>gpt-4o-mini-tts</i>"]
+    spk --> bar["CompanionBar<br/><i>words as spoken</i>"]
+
+    classDef built fill:#eef7ee,stroke:#5a5,color:#243;
+    classDef hush fill:#f4f4f5,stroke:#999,color:#444;
+    classDef seam fill:#eef2fb,stroke:#55a,color:#224;
+    class stream,rec,gate,ctx,tx,bar built;
+    class obs,spk seam;
+    class quiet hush;
+```
+
+![The companion's top-centre chip carrying its latest remark, with the transcript open beneath it showing both — one about three notes clustering, one about the arrow drawn to a note far across the canvas](docs/images/companion-remark.png)
+
+Both remarks in that transcript are what the model actually said to the canvas underneath them. It reads newest first, so the one on top came second — an arrow drawn to a note on the far side of the canvas, which is the case the [separation of signals](#relational-gravity) exists for: proximity says those two are unrelated, and the user has just said otherwise. The one below it came first, when three notes drifted into one another's fields.
+
+**An episode is the unit, not an event.** A drag emits a `node_moved` and an `influence_changed` per node per store tick, so handing the model raw events would be handing it hundreds of near-identical records. `createEpisodeRecorder` buffers the stream and finalizes after `EPISODE_IDLE_MS` (2s) of quiet; `buildEpisodeSummary` then folds the buffer to net change — per directed pair, the first sighting fixes `before` and the last advances `after`, keeping every distinct transition it passed through. A `node_moved` folds the same way, origin to destination. Both are pure functions in `src/domain/episode.ts`, testable without a clock or a network.
+
+**Significance is decided twice, by two different kinds of judge.** The local gate (`isTrivialEpisode`) is cheap and deliberately dumb: any structural change other than a bare move is always interesting, and failing that an episode is trivial when every pair's net influence shift stays under `TRIVIAL_INFLUENCE_EPSILON` (0.05). It exists only to keep genuine noise off the wire. Everything that survives is worth _asking_ about — and the model then decides whether it is worth _speaking_ about. **Silence is a first-class answer**, returned as structured output (`{ speak, comment }`) rather than detected in prose, and it is the normal outcome for most episodes.
+
+**The observer is handed meaning, not ids.** An episode names nodes by `NodeId` — a tldraw shape id — which is all the domain should carry and nothing a model can interpret. `readEpisodeContext` (in the adapter, because reading the canvas is a canvas concern) resolves those ids to the notes' own text, and adds every relation currently touching them, whether or not this episode created it. That second part is what makes "you pulled them apart but kept the connection" legible at all: the episode itself only reports that influence fell, and the arrow may have been drawn ten episodes ago.
+
+**Three behaviours in the orchestrator are worth naming**, all in `createCompanion`:
+
+- **Two switches, two different jobs.** `observationEnabled` gates the model call; `voiceEnabled` gates only playback. Off/off is silent; on/off fills the transcript without speaking. The switch is re-read after the await, because a user who turns observation off mid-thought is asking not to be spoken to, and the answer in hand was authorised by a setting that no longer holds.
+- **At most one observation in flight.** A new episode aborts the previous request — the canvas has moved on, so its answer is about a state that no longer exists — and a generation counter makes a late response harmless even if the abort is ignored.
+- **The text arrives with the voice.** Deciding what to say and synthesising it are two waits of a few seconds each. Announcing the remark after the first one meant the user read it, finished, and only then heard it read aloud — so the thinking hint stays up through synthesis, and the words are released as playback reports its progress (`spokenPrefix` in `reveal.ts`, position-weighted since an mp3 carries no word timings). The transcript is still written _before_ playback: it is the record of what the companion decided, so it must survive voice being off or synthesis failing.
+
+**Both API keys live in `server/`.** That is the whole reason this repo has a backend — two Hono routes, `/api/observe` and `/api/speak`, with the prompt and the model choice server-side so the persona can be tuned without shipping anything to the browser. Both routes **fail safe**: a malformed body, a missing key or a 400 from the SDK all degrade to `{ speak: false }` rather than an error at the user. The observer runs with thinking disabled, because `max_tokens` caps thinking plus text and a truncated response parses to nothing — which is indistinguishable from a considered silence.
+
+**The pause is real, and it is measured.** Against the live APIs, warm:
+
+| Stage                                     | Cost       |
+| ----------------------------------------- | ---------- |
+| `EPISODE_IDLE_MS` before the episode ends | 2.0s       |
+| `/api/observe` (`claude-sonnet-5`)        | 2.6 – 3.0s |
+| `/api/speak` (`gpt-4o-mini-tts`)          | ~1.8s      |
+
+Roughly 6.6s from "user stops dragging" to first sound, and the thinking hint covers the last ~4.6s of it. The one large lever is `OBSERVER_MODEL=claude-haiku-4-5`, which is about 2s faster at some cost in judgement; the TTS model is not the bottleneck and swapping it does not help.
 
 ### Grounded screenshot
 
@@ -503,6 +583,11 @@ Six things about it are worth knowing:
 ## Layout
 
 ```
+server/                        Two routes, so the API keys never reach the browser
+  index.ts                     Hono app — /api/observe, /api/speak, dist/ in production
+  observe.ts                   One episode in, a speak / stay-silent decision out
+  prompt.ts                    The system prompt, the decision schema, episode → prose
+  speak.ts                     Text-to-speech synthesis
 src/
   main.tsx                     React entry point
   App.tsx                      Thin shell, renders <Canvas />
@@ -512,7 +597,18 @@ src/
     canvas.ts                  CanvasDocument — the four layers, Relation, clampGravity
     grounding.ts               Grounding types — screenshot pixels, not canvas units
     spatialInfluence.ts        Node centre, distance, influence, buildSpatialContext
+    effectiveStrength.ts       The one place the two strength signals combine
+    canvasDiff.ts              diffCanvas(before, after) — the only notion of "before"
+    events.ts                  deriveEvents — a diff restated as ordered events
+    eventStream.ts             In-process subscribable buffer; the app-wide singleton
+    episode.ts                 Events folded into one gesture + the local significance gate
     index.ts                   Barrel — the @/domain import surface
+  companion/                   The AI observer's loop — the event stream's one consumer
+    companion.ts               episode → gate → observe → record → speak
+    companionState.ts          Module atoms: the switches, the stage, the transcript
+    observerClient.ts          The seam to the model — POST an episode, get a decision
+    voiceClient.ts             The seam to TTS — POST text, play audio, report progress
+    reveal.ts                  Which words have been said at a given fraction of playback
   canvas/
     Canvas.tsx                 The <Tldraw /> wrapper — persistence, onMount hook
     config.tsx                 Module-scope shape utils, tools, UI overrides and toolbar
@@ -521,9 +617,14 @@ src/
       ids.ts                   NodeId ⇄ TLShapeId
       richText.ts              plain text ⇄ rich text, kept pure
       relations.ts             arrow ⇄ Relation, gravity reads/writes, rebuilding on import
+      relationGeometry.ts      Measures an arrow's drawn path in world space; never throws
       canvasView.ts            getCanvasDocument(editor), useCanvasDocument()
       metadata.ts              createdAt / updatedAt side effects
       contextualField.ts       setContextualFieldRadius(editor, ids, radius)
+      spatialEvents.ts         Drives diffCanvas from live edits — the one subscription
+      episodeContext.ts        An episode's ids → note text + the relations that exist
+    dev/
+      seedScenario.ts          The walkthrough scene, behind window.seedDemoScene()
     shapes/                    The tldraw projection of a post_it
       postItShape.ts           Shape type + guard (type-only tldraw imports)
       postItStyles.ts          Raw-hex StyleProps for fill / stroke / text
@@ -540,7 +641,11 @@ src/
       theme.ts                 Panel chrome, built from tldraw's own theme tokens
       InspectorDock.tsx        The top-right rail: two buttons, Inspector beneath
       InspectorPanel.tsx       Live canonical JSON, relation + influence tables, grounded export
+      EventLogPanel.tsx        Live view of the spatial event stream, newest first
       CompanionBar.tsx         The top-centre chip: latest sentence, thinking, transcript
+      CompanionTranscriptPanel.tsx  Everything the companion has said this session
+      CompanionControls.tsx    The AI observation and Voice switches
+      AgentThinkingIndicator.tsx  The hint naming the job the companion is on
       ViewSettingsPopover.tsx  The ⋯ button's three switches
       PostItStylePanel.tsx     Colour controls, and hosts the field and gravity controls
       ContextualFieldControl.tsx  Radius input for the selection
@@ -567,6 +672,8 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 - **Change detection over time** → `diffCanvas(before, after)` in `src/domain/canvasDiff.ts`. Capture documents with `getCanvasDocument(editor)`; it reads the derived layers rather than recomputing them, so it can't disagree with the JSON you already have. For changes as they happen, subscribe to the [event stream](#event-stream) instead of holding your own snapshots.
 - **A new event type** → add it to the `SpatialEvent` union in `src/domain/events.ts` and emit it from `deriveEvents`, which is pure and takes a `CanvasDiff`. If the transition isn't visible in a diff, the gap is in `canvasDiff.ts`, not here — add the change kind or pair delta first, so the event stays a restatement of something a reader could already see in the JSON. Give it a line in `describeEvent` in `src/canvas/ui/EventLogPanel.tsx`; the switch is exhaustive, so TypeScript will fail the build until you do.
 - **Something that watches the canvas** (an agent, a logger, an experiment) → `spatialEventStream.subscribe(fn)` from `@/domain`. Don't add a second store subscription: `registerSpatialEvents` is deliberately the only one, so every consumer sees the same ordered events.
+- **What the companion says, or how it judges** → `SYSTEM_PROMPT` and `renderEpisode` in `server/prompt.ts`. Both are server-side so the persona can change without touching the client, and `renderEpisode` is unit-tested from the browser side (`src/companion/renderEpisode.test.ts`) because what the model is _told_ is as much a decision as what it is asked. A different model is `OBSERVER_MODEL` in `.env`; a different voice is `TTS_VOICE`.
+- **More of the representation reaching the observer** (attention, a text edit, a new node type) → the gap is upstream of the companion. Add the change kind to `canvasDiff.ts`, the event to `events.ts`, then carry it through `buildEpisodeSummary` and `describeStructural`. Don't special-case it in the companion: an episode should stay a restatement of things a reader could already see in the JSON.
 
 ## Known limitations
 
@@ -591,16 +698,26 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 - **An undo appends rather than retracts.** An undo is a document change like any other, so the stream reports the events that _reverse_ it (`node_moved`, then whichever crossing that implies). A subscriber is never told to un-act on an event it already handled. Pinned by a test.
 - **Events carry no causality.** `deriveEvents` inherits the diff's refusal to attribute: a `node_moved` and the `influence_changed` rows around it arrive as siblings, never as cause and effect, because with two nodes moving the attribution would be an inference. See [Change detection](#change-detection).
 - **The proximity thresholds are uncalibrated**, exactly like `INTENT_WEIGHT`. `STRONG_PROXIMITY = 0.66` and `WEAK_PROXIMITY = 0.33` split a continuous influence into bands so `proximity_changed` has something to report; nothing consumes the bands yet, so there is no task to tune them against. Two named constants in one file.
+- **There is one node type.** `NodeType` is `'post_it'` and nothing else, so every idea on this canvas is words. Image, article and agent nodes are what the abstraction was built for — `NodeContent` keeps `text` generic at the Node level precisely so a source URL can sit beside it — and none of them exist. See [Where to add things](#where-to-add-things).
+- **Attention is not part of the representation.** Selection drives the field highlight and the [influence badges](#influence-scores), and stops there: it is in no `CanvasDocument`, emits no event, and never reaches the observer. So the companion can see that you moved something and not what you are looking at, which is a large share of what a person is actually doing.
+- **The companion cannot write back.** It observes the representation and speaks about it; adding a node, drawing a relation or proposing a grouping is not wired, so the loop closes through the user rather than through the canvas.
+- **A text edit reaches neither the stream nor the observer** — the same limitation as the event vocabulary above, but worth stating twice, because it means the companion is blind to the one change that alters what an idea _means_.
+- **The companion needs two API keys and is otherwise silent.** With no `.env` the routes fail safe and return `{ speak: false }`, which is indistinguishable at the UI from a model that had nothing to say. Everything else in the app is unaffected.
+- **The transcript is in memory and capped** at `TRANSCRIPT_LIMIT` (50); a reload starts empty, for the same reason the event log does. Anti-repetition sees only the last `DEFAULT_HISTORY_SIZE` (3) remarks, so the companion can repeat itself across a long session.
+- **`EPISODE_IDLE_MS` and `TRIVIAL_INFLUENCE_EPSILON` are uncalibrated**, like `INTENT_WEIGHT` and the proximity bands. 2s is a guess at how long a pause means "done", and 0.05 at what counts as a nudge; both were set to feel right in use rather than measured against a task. Two named constants in `src/domain/episode.ts`.
+- **A drag that never pauses never becomes an episode.** The recorder finalizes on idle, so continuous manipulation defers the observation indefinitely — `EPISODE_BUFFER_LIMIT` (2000 events) is a backstop against unbounded growth, and hitting it costs the episode its earliest `before`.
 
 ## Testing
 
 `npm test` runs three layers, because the first one alone turned out not to be enough — two bugs shipped that were invisible to pure tests (a meta write the record validator rejected, and a control whose commit was destroyed by the selection change that triggered it).
 
-| Layer              | Files                                                                                                                                                                                                  | Environment                |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
-| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff,events,eventStream}.test.ts`, `adapter/{adapter,relations}.test.ts`, `grounding/{visualId,projection,grounding,annotationLayer}.test.ts` | `node` — no DOM, no editor |
-| Real editor        | `adapter/{editor,relationEditor,spatialEvents}.test.ts`, `dev/seedScenario.test.ts`, `grounding/groundedExport.test.ts`                                                                                | `jsdom`                    |
-| Rendered component | `ui/*.test.tsx`                                                                                                                                                                                        | `jsdom`                    |
+| Layer              | Files                                                                                                                                                                                                                                                      | Environment                |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff,events,eventStream,episode}.test.ts`, `companion/{renderEpisode,reveal}.test.ts`, `adapter/{adapter,relations}.test.ts`, `grounding/{visualId,projection,grounding,annotationLayer}.test.ts` | `node` — no DOM, no editor |
+| Real editor        | `adapter/{editor,relationEditor,spatialEvents}.test.ts`, `dev/seedScenario.test.ts`, `grounding/groundedExport.test.ts`, `companion/companion.test.ts`                                                                                                     | `jsdom`                    |
+| Rendered component | `ui/*.test.tsx`                                                                                                                                                                                                                                            | `jsdom`                    |
+
+The companion needs no network, no clock and no audio device to be tested: `createCompanion` takes an `ObserverClient`, a `VoiceClient` and a `Schedule`, so every branch of the loop — silence, voice off, observation off, interruption, anti-repetition, the text/voice handover — is driven through fakes. `renderEpisode` is tested from the client side even though it lives in `server/` (imported by relative path, since Vite's `@` alias doesn't cover it), because what the model is _told_ is as much a decision as what it is asked: a payload rendered as opaque shape ids still produces a fluent remark, just a meaningless one. The two routes themselves have no tests — what is left of them after the prompt is the SDK.
 
 The default environment is `node`; the DOM suites opt in with a `@vitest-environment jsdom` docblock. That keeps the pure layer honest: `src/domain`, `src/canvas/adapter` and `postItShape.ts` import tldraw for _types only_, and adding a runtime tldraw import to any of them will break it.
 
