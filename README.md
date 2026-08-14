@@ -147,7 +147,7 @@ Influence is **derived, never stored**. It is a function of two Nodes' geometry 
 
 Two details worth knowing:
 
-- The radius is optional and **never defaulted**. A Node with no field exerts no influence, which is a different claim from a Node with a small one.
+- The radius is optional and **never defaulted** _by the model_. A Node with no field exerts no influence, which is a different claim from a Node with a small one, so `createPostItNode` leaves the key off unless given one and nothing invents a radius on read. The Post-it _tool_ does open a new note with `SUGGESTED_RADIUS` (500) — a canvas whose notes all reach nowhere hides the very thing this prototype is about — but that is the canvas layer making an explicit choice and writing it in, and **Clear** in the style panel returns a note to having no field at all.
 - The centre is rotation-aware. `SpatialProperties.rotation` is applied about the top-left corner, so `x + width / 2` is only the centre of an unrotated box.
 
 #### Seeing it

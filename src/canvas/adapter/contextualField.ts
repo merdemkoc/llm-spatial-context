@@ -11,6 +11,22 @@ import { isPostItShape } from '@/canvas/shapes/postItShape'
 import { contextualFieldPatch } from '@/canvas/adapter/adapter'
 
 /**
+ * The radius a post-it starts with, and the one the style panel's **Add** restores.
+ *
+ * Deliberately *not* in `src/domain`. `createPostItNode` still defaults nothing: a node
+ * with no `contextualField` exerts no influence, and that has to stay a different claim
+ * from a node with a small one — so the model never invents a radius on read. This is the
+ * canvas layer choosing an opening value on the user's behalf, written explicitly into the
+ * node like any other edit, and removable per note with **Clear**.
+ *
+ * It lives beside the write it feeds rather than in the panel, because the panel is no
+ * longer the only caller: `PostItTool` opens with it too. A canvas whose new notes reach
+ * nowhere makes the one idea this prototype is about invisible until you go looking for a
+ * button.
+ */
+export const SUGGESTED_RADIUS = 500
+
+/**
  * Sets the contextual-field radius on the given post-its, or clears the field
  * when `radius` is null.
  *

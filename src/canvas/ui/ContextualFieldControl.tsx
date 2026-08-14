@@ -7,15 +7,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useEditor, useValue, type Editor, type TLShapeId } from 'tldraw'
 import { readNodeContextualField } from '@/canvas/adapter/adapter'
-import { selectedPostItIds, setContextualFieldRadius } from '@/canvas/adapter/contextualField'
+import {
+	selectedPostItIds,
+	setContextualFieldRadius,
+	SUGGESTED_RADIUS,
+} from '@/canvas/adapter/contextualField'
 import { caption, numberInput, panelButton } from '@/canvas/ui/theme'
-
-/**
- * Suggested starting radius for a field the user is switching on. It lives here
- * and not in `src/domain` on purpose: the model must never apply a radius
- * implicitly, so this is a UI convenience and nothing more.
- */
-export const SUGGESTED_RADIUS = 500
 
 /** Several selected post-its whose radii disagree. */
 const MIXED = 'mixed'
