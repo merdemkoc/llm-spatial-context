@@ -1,7 +1,7 @@
 /**
  * An in-process, subscribable stream of spatial events.
  *
- * The MVP 1 spec asks for "an internal event stream abstraction" that a future AI
+ * The MVP 1 spec asks for "an internal event stream abstraction" that an AI
  * observer can subscribe to — deliberately local and in-process, no WebSockets. This
  * is it: subscribers receive each event as it is emitted, and a bounded ring of recent
  * events is retained so a panel mounting late, or a console reaching in, can read the

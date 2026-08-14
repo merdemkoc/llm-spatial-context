@@ -40,7 +40,7 @@ function handleMount(editor: Editor) {
 	]
 
 	// Convenience while prototyping: reach the editor from the browser console, seed the
-	// demonstration scene, and read the event stream a future AI observer would consume.
+	// demonstration scene, and read the same event stream the companion above consumes.
 	if (import.meta.env.DEV) {
 		const globals = window as unknown as {
 			editor: Editor

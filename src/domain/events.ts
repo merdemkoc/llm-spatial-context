@@ -5,7 +5,7 @@
  * lists. This module answers the next question — "what *happened*" — as an ordered
  * sequence a subscriber can react to one item at a time. It is the substrate the
  * MVP 1 spec calls for: the same structured record whether a human reads it in the
- * event log or a future AI observer consumes it, with no need to reconstruct spatial
+ * event log or the AI companion consumes it, with no need to reconstruct spatial
  * state from a screenshot.
  *
  * It adds nothing the diff did not already contain. Structural events are the eight

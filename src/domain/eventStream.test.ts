@@ -2,7 +2,7 @@
  * The in-process event stream.
  *
  * A subscribable buffer of `SpatialEvent`s — the thing a debug panel renders and a
- * future AI observer attaches to. It stores nothing about the canvas; it only relays
+ * AI companion attaches to. It stores nothing about the canvas; it only relays
  * and retains what `deriveEvents` produced.
  */
 import { describe, expect, it, vi } from 'vitest'

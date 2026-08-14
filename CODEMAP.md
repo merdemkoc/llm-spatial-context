@@ -27,11 +27,13 @@ So the mental model is one direction of trust:
 | ----------- | --------------------------------------------------------------------------------- |
 | UI          | React 19; `generative-loaders` for the companion's activity + text-stream loaders |
 | Canvas      | tldraw 5.3 (store, persistence, arrows/bindings, `toImage`)                       |
-| Build / dev | Vite 8 (`@` → `src/`)                                                             |
+| Build / dev | Vite 8 (`@` → `src/`), the server on `tsx watch`, both under `concurrently`       |
 | Language    | TypeScript 5.9, strict, `noEmit`                                                  |
+| Server      | Hono 4 on `@hono/node-server` — two routes, only to hold the API keys             |
+| Models      | `@anthropic-ai/sdk` for the observer, `openai` for the voice                      |
 | Tests       | Vitest 4 — `node` env by default, `jsdom` opt-in via docblock                     |
 | Lint/format | ESLint 10 (flat config) + Prettier (tabs, no-semi, single, width 100)             |
-| Storage     | tldraw IndexedDB `persistenceKey` — no backend                                    |
+| Storage     | tldraw IndexedDB `persistenceKey` — no database, and none of the canvas leaves it |
 
 ## Architecture at a glance
 
@@ -42,21 +44,32 @@ graph TD
     shapes["<b>src/canvas/shapes/</b><br/>tldraw shapes + tools"]
     grounding["<b>src/canvas/grounding/</b><br/>world ⇄ screenshot pixels"]
     ui["<b>src/canvas/ui/</b><br/>React panels + overlays"]
+    companion["<b>src/companion/</b><br/>the observer's loop"]
+    server["<b>server/</b><br/>two routes, the API keys"]
     tldraw(["tldraw store<br/>single runtime store"])
 
     ui -->|imports| adapter
     shapes -->|imports| adapter
     grounding -->|imports| adapter
+    companion -->|imports| domain
+    companion -->|"POSTs /api"| server
     adapter -->|imports| domain
     adapter -->|reads/writes| tldraw
     shapes -->|renders in| tldraw
     ui -->|renders in| tldraw
+    ui -->|reads atoms| companion
 
     classDef pure fill:#eef7ee,stroke:#5a5;
     classDef bridge fill:#eef2fb,stroke:#55a;
+    classDef remote fill:#fdf1f7,stroke:#c59,color:#623;
     class domain pure;
     class adapter bridge;
+    class server remote;
 ```
+
+`src/companion/` imports `@/domain` and nothing from `src/canvas/` — the one thing it needs from
+the canvas (what an episode's node ids refer to) is **injected** by `Canvas.tsx` as a function,
+not imported. That is what keeps the whole loop testable without an editor.
 
 `src/domain/**` may **not** import `tldraw`/`@tldraw/*`. That boundary is the whole point of
 the split, so `eslint.config.js` enforces it with `no-restricted-imports` rather than leaving
@@ -88,7 +101,14 @@ flowchart LR
     diff --> de["deriveEvents()<br/>classify changes"]
     de --> es[["spatialEventStream"]]
     es --> elp["EventLogPanel · window.spatialEvents"]
+    es --> rec["createEpisodeRecorder<br/>fold after a 2s pause"]
+    rec --> comp["createCompanion<br/>gate → observe → speak"]
+    comp --> api(["server/ · /api/observe · /api/speak"])
 ```
+
+The companion is the second consumer of that stream and the only one that acts on it. It reads
+the document too, but only through `readEpisodeContext` — to turn the episode's ids into note
+text — never to reconstruct canvas state the events already carry.
 
 **Write / import** — rebuilding the canvas from canonical JSON in a single undo step. The two
 derived layers are output-only: whatever `spatialContext` / `grounding` an imported document
@@ -144,6 +164,7 @@ document the single source of truth and the stream a view of its changes.
 | `canvasDiff.ts`        | The only module with a notion of _before_ — compares two documents; keeps no listener or log of its own | `diffCanvas`, `CanvasDiff`, `CanvasChange`, `PairDelta`, `Delta`, `RelationEndpoints`                                                                                                                              |
 | `events.ts`            | Restates a `CanvasDiff` as an ordered event list — structural events + classified pair events           | `deriveEvents`, `SpatialEvent`, `PairSnapshot`, `STRONG_PROXIMITY`, `WEAK_PROXIMITY`                                                                                                                               |
 | `eventStream.ts`       | In-process subscribable buffer of events (no WebSockets); the app-wide singleton lives here             | `createEventStream`, `spatialEventStream`, `SpatialEventStream`, `EventListener`, `DEFAULT_BUFFER_SIZE`                                                                                                            |
+| `episode.ts`           | The observer's unit — a stream folded into one gesture after a pause, plus the local significance gate  | `buildEpisodeSummary`, `isTrivialEpisode`, `createEpisodeRecorder`, `EpisodeSummary`, `EpisodePairChange`, `Schedule`, `EPISODE_IDLE_MS`, `TRIVIAL_INFLUENCE_EPSILON`, `EPISODE_BUFFER_LIMIT`                      |
 | `grounding.ts`         | Types only for the grounding layer (screenshot-pixel regions)                                           | `Grounding`, `GroundedNodeRegion`, `ImageSize`, `VisualId`                                                                                                                                                         |
 | `index.ts`             | Barrel — the single `@/domain` import surface used by the adapter and UI                                | re-exports all of the above                                                                                                                                                                                        |
 
@@ -152,17 +173,18 @@ document the single source of truth and the stream a view of its changes.
 `adapter.ts`, `ids.ts`, `richText.ts` use **type-only** tldraw imports so round-trip tests run
 without a DOM.
 
-| File                  | Responsibility                                                                                              | Key exports                                                                                                                                                                                                           |
-| --------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `adapter.ts`          | The projection: `shapeToNode` / `nodeToShape`, plus defensive `shape.meta` read/write helpers               | `shapeToNode`, `nodeToShape`, `readNodeMeta`, `writeNodeMeta`, `readNodeContextualField`, `writeNodeContextualField`, `contextualFieldPatch`, `PageTransform`                                                         |
-| `canvasView.ts`       | Assembles the whole `CanvasDocument` from the current page — the one place a document is built              | `getCanvasDocument`, `useCanvasDocument`                                                                                                                                                                              |
-| `relations.ts`        | Relation ⇄ arrow projection; reads bound arrows into `Relation`s, rebuilds them on import, owns gravity     | `getCanvasRelations`, `createRelations`, `isRelationArrow`, `relationType`, `relationGravity`, `setRelationGravity`, `selectedRelationArrowIds`, `RELATION_META_KEY`, `RELATION_GRAVITY_META_KEY`, `ARROW_SHAPE_TYPE` |
-| `relationGeometry.ts` | Measures each relation arrow's drawn path — world-space bounds + a point **on** the curve. Never throws     | `getRelationGeometry`                                                                                                                                                                                                 |
-| `contextualField.ts`  | Editor-side writes for the contextual field (set/clear radius, with history mark)                           | `setContextualFieldRadius`, `selectedPostItIds`                                                                                                                                                                       |
-| `metadata.ts`         | Non-derivable node state via tldraw side-effects — `createdAt` / `updatedAt` / `createdBy`, `meta.relation` | `registerNodeMetadata`, `restoringNodes`                                                                                                                                                                              |
-| `spatialEvents.ts`    | Drives the pure `diffCanvas` from live edits — holds the previous document, diffs on store change, emits    | `registerSpatialEvents`                                                                                                                                                                                               |
-| `ids.ts`              | Identity mapping: `NodeId` ⇄ `TLShapeId` (and the relation equivalents), tldraw-runtime-free                | `nodeIdToShapeId`, `shapeIdToNodeId`, `relationIdToShapeId`, `shapeIdToRelationId`, `createNodeId`                                                                                                                    |
-| `richText.ts`         | Pure plain-text ⇄ rich-text conversion (formatting is intentionally lossy on rebuild)                       | `plainTextToRichText`, `richTextToPlainText`                                                                                                                                                                          |
+| File                  | Responsibility                                                                                               | Key exports                                                                                                                                                                                                           |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `adapter.ts`          | The projection: `shapeToNode` / `nodeToShape`, plus defensive `shape.meta` read/write helpers                | `shapeToNode`, `nodeToShape`, `readNodeMeta`, `writeNodeMeta`, `readNodeContextualField`, `writeNodeContextualField`, `contextualFieldPatch`, `PageTransform`                                                         |
+| `canvasView.ts`       | Assembles the whole `CanvasDocument` from the current page — the one place a document is built               | `getCanvasDocument`, `useCanvasDocument`                                                                                                                                                                              |
+| `relations.ts`        | Relation ⇄ arrow projection; reads bound arrows into `Relation`s, rebuilds them on import, owns gravity      | `getCanvasRelations`, `createRelations`, `isRelationArrow`, `relationType`, `relationGravity`, `setRelationGravity`, `selectedRelationArrowIds`, `RELATION_META_KEY`, `RELATION_GRAVITY_META_KEY`, `ARROW_SHAPE_TYPE` |
+| `relationGeometry.ts` | Measures each relation arrow's drawn path — world-space bounds + a point **on** the curve. Never throws      | `getRelationGeometry`                                                                                                                                                                                                 |
+| `contextualField.ts`  | Editor-side writes for the contextual field (set/clear radius, with history mark)                            | `setContextualFieldRadius`, `selectedPostItIds`                                                                                                                                                                       |
+| `metadata.ts`         | Non-derivable node state via tldraw side-effects — `createdAt` / `updatedAt` / `createdBy`, `meta.relation`  | `registerNodeMetadata`, `restoringNodes`                                                                                                                                                                              |
+| `spatialEvents.ts`    | Drives the pure `diffCanvas` from live edits — holds the previous document, diffs on store change, emits     | `registerSpatialEvents`                                                                                                                                                                                               |
+| `episodeContext.ts`   | What an episode's ids refer to — resolves `NodeId`s to note text and collects the relations standing on them | `readEpisodeContext`                                                                                                                                                                                                  |
+| `ids.ts`              | Identity mapping: `NodeId` ⇄ `TLShapeId` (and the relation equivalents), tldraw-runtime-free                 | `nodeIdToShapeId`, `shapeIdToNodeId`, `relationIdToShapeId`, `shapeIdToRelationId`, `createNodeId`                                                                                                                    |
+| `richText.ts`         | Pure plain-text ⇄ rich-text conversion (formatting is intentionally lossy on rebuild)                        | `plainTextToRichText`, `richTextToPlainText`                                                                                                                                                                          |
 
 ### `src/canvas/shapes/` — the tldraw projection of a post-it
 
@@ -206,6 +228,9 @@ Every decision that could put a box in the wrong place lives in a pure function;
 | `InspectorDock.tsx`            | The `SharePanel` rail: the ⋯ popover trigger and the Canonical JSON toggle, with the Inspector beneath     | `InspectorDock`                                                                                                     |
 | `InspectorPanel.tsx`           | Live canonical JSON, Copy/Import, grounded-screenshot export, the three strength tables, and the event log | `InspectorPanel`                                                                                                    |
 | `CompanionBar.tsx`             | The `TopPanel` chip: latest comment, thinking indicator, transcript popover                                | `CompanionBar`                                                                                                      |
+| `CompanionTranscriptPanel.tsx` | Everything the companion has said this session, newest last, behind the chip                               | `CompanionTranscriptPanel`                                                                                          |
+| `CompanionControls.tsx`        | The companion's two switches — AI observation gates the model call, Voice gates only playback              | `CompanionControls`                                                                                                 |
+| `AgentThinkingIndicator.tsx`   | The hint shown while the companion works, naming which job it is on rather than spinning                   | `AgentThinkingIndicator`                                                                                            |
 | `ViewSettingsPopover.tsx`      | The ⋯ button and its three switches (fields, observation, voice)                                           | `ViewSettingsPopover`                                                                                               |
 | `EventLogPanel.tsx`            | Live view of the spatial event stream (newest first, Clear); reads the module-scope singleton              | `EventLogPanel`                                                                                                     |
 | `PostItStylePanel.tsx`         | Custom StylePanel — hosts the contextual-field and gravity controls + colour swatch rows                   | `PostItStylePanel`                                                                                                  |
@@ -228,6 +253,21 @@ Subscribes to the [event stream](./README.md#event-stream), groups events into e
 | `voiceClient.ts`    | The seam to TTS: POST the text, play the returned audio, and report when playback starts and how far through it is                                                                    | `VoiceClient`, `SpeakOptions`, `createHttpVoiceClient`                                              |
 | `reveal.ts`         | Which words have been said at a given fraction of playback — position-weighted, since the mp3 carries no word timings                                                                 | `spokenPrefix`                                                                                      |
 
+### `server/` — the two routes that hold the API keys
+
+The repo was backend-free by design. This exists only because the companion calls two paid
+APIs and neither key may reach the browser. Both routes **fail safe**: a bad body, a missing
+key or a rejected request degrades to silence rather than to an error at the user. Config is
+read _inside_ each function, never in a module constant — ESM evaluates these modules before
+`index.ts` calls `process.loadEnvFile()`, so a constant would bake the default and ignore `.env`.
+
+| File         | Responsibility                                                                                        | Key exports                                                                            |
+| ------------ | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `index.ts`   | The Hono app — `/api/observe`, `/api/speak`, a 256 KB body cap on both, `dist/` in production         | —                                                                                      |
+| `observe.ts` | One episode in, a speak / stay-silent decision out. Structured output; thinking deliberately disabled | `observe`, `ObserverDecision`                                                          |
+| `prompt.ts`  | The observer's whole character — system prompt, decision schema, and an episode rendered as prose     | `SYSTEM_PROMPT`, `DECISION_SCHEMA`, `renderEpisode`, `observerModel`, `EpisodePayload` |
+| `speak.ts`   | Text-to-speech; mp3 bytes back, capped at `MAX_SPEAK_CHARS`                                           | `synthesize`, `MAX_SPEAK_CHARS`                                                        |
+
 ### Config & tooling (root)
 
 | File               | Responsibility                                                                                  |
@@ -244,11 +284,11 @@ Subscribes to the [event stream](./README.md#event-stream), groups events into e
 Three layers, because the pure layer alone shipped two bugs it couldn't see. See the README's
 [Testing](./README.md#testing) section.
 
-| Layer              | Files                                                                                                                                                                                                                              | Env     |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff,events,eventStream}.test.ts`, `adapter/adapter.test.ts`, `adapter/relations.test.ts`, `grounding/{projection,grounding,visualId,annotationLayer,arrowAware}.test.ts` | `node`  |
-| Real editor        | `adapter/editor.test.ts`, `adapter/relationEditor.test.ts`, `adapter/spatialEvents.test.ts`, `dev/seedScenario.test.ts`, `grounding/groundedExport.test.ts`                                                                        | `jsdom` |
-| Rendered component | `ui/ContextualFieldControl.test.tsx`, `ui/RelationGravityControl.test.tsx`, `ui/ContextualFieldOverlay.test.tsx`, `ui/InfluenceBadges.test.tsx`, `ui/EventLogPanel.test.tsx`                                                       | `jsdom` |
+| Layer              | Files                                                                                                                                                                                                                                                                                  | Env     |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff,events,eventStream,episode}.test.ts`, `companion/{renderEpisode,reveal}.test.ts`, `adapter/adapter.test.ts`, `adapter/relations.test.ts`, `grounding/{projection,grounding,visualId,annotationLayer,arrowAware}.test.ts` | `node`  |
+| Real editor        | `adapter/editor.test.ts`, `adapter/relationEditor.test.ts`, `adapter/spatialEvents.test.ts`, `dev/seedScenario.test.ts`, `grounding/groundedExport.test.ts`, `companion/companion.test.ts`                                                                                             | `jsdom` |
+| Rendered component | `ui/ContextualFieldControl.test.tsx`, `ui/RelationGravityControl.test.tsx`, `ui/ContextualFieldOverlay.test.tsx`, `ui/InfluenceBadges.test.tsx`, `ui/EventLogPanel.test.tsx`, `ui/Companion*.test.tsx`, `ui/AgentThinkingIndicator.test.tsx`                                           | `jsdom` |
 
 ## Where to start reading
 
@@ -257,7 +297,9 @@ Three layers, because the pure layer alone shipped two bugs it couldn't see. See
 3. `src/canvas/adapter/canvasView.ts` — how the whole document is assembled (`getCanvasDocument`).
 4. `src/canvas/adapter/adapter.ts` — the shape ⇄ node round trip.
 5. `src/domain/events.ts` + `src/canvas/adapter/spatialEvents.ts` — how a change becomes an event.
-6. `src/canvas/Canvas.tsx` + `src/canvas/config.tsx` — how it all mounts and registers.
+6. `src/domain/episode.ts` + `src/companion/companion.ts` — how events become a remark.
+7. `server/prompt.ts` — what the model is actually told.
+8. `src/canvas/Canvas.tsx` + `src/canvas/config.tsx` — how it all mounts and registers.
 
 ## Key invariants
 
@@ -284,6 +326,15 @@ Three layers, because the pure layer alone shipped two bugs it couldn't see. See
 - **One store subscription.** `registerSpatialEvents` is the only thing listening to the store for
   change detection, so every consumer sees the same ordered events. Its disposer is returned from
   `onMount` — dropping it would double every event under StrictMode.
+- **Silence is an answer, not a failure.** The observer returns `{ speak, comment }` as structured
+  output, and every failure path on the server — no key, bad body, rejected request — returns
+  `speak: false` rather than throwing. Nothing in the loop distinguishes "had nothing to say" from
+  "could not ask", by design: neither should interrupt the person thinking.
+- **The companion holds no canvas state.** It reads the document only through `readEpisodeContext`,
+  to turn ids into note text. Everything else it knows comes from the events, which is what makes
+  `createCompanion` testable with a fake stream and no editor at all.
+- **No API key reaches the browser.** The prompt, the model choice and both SDK calls live in
+  `server/`; the client ships an episode and receives a verdict.
 - **One Canvas is one tldraw page.** The page menu is hidden to keep that true.
 
 ## See also
