@@ -22,9 +22,10 @@
  */
 import type { Editor, TLArrowBinding, TLShape, TLShapeId } from 'tldraw'
 import type { CanvasNode, NodeId, Relation, RelationId } from '@/domain'
-import { clampGravity, nodeCenter } from '@/domain'
+import { clampGravity, DEFAULT_RELATION_GRAVITY, nodeCenter } from '@/domain'
 import { isPostItShape } from '@/canvas/shapes/postItShape'
 import {
+	createRelationId,
 	nodeIdToShapeId,
 	relationIdToShapeId,
 	shapeIdToNodeId,
@@ -206,6 +207,73 @@ export function createRelations(
 			// `snap` is deliberately omitted so the binding util's own default applies:
 			// an imported arrow should route exactly like a drawn one, and hard-coding
 			// a value here would make the two diverge if that default ever changes.
+			return [
+				binding(arrowId, nodeIdToShapeId(relation.from), 'start'),
+				binding(arrowId, nodeIdToShapeId(relation.to), 'end'),
+			]
+		})
+	)
+
+	return drawable.length
+}
+
+/** One arrow the agent proposes to draw between two existing notes. */
+export interface AgentRelation {
+	from: NodeId
+	to: NodeId
+	label?: string
+}
+
+/**
+ * Draws agent-authored relation arrows — the "grey arrow" made literal.
+ *
+ * Like `createRelations`, but for arrows the companion proposes rather than a document import:
+ * each is drawn grey and dashed and stamped `createdBy: 'agent'` in its meta, so an AI-drawn link
+ * reads as its own at a glance and can be told from a user's. Full-strength gravity, because
+ * accepting one is the same explicit claim as drawing it. One undo step; returns how many drew.
+ */
+export function createAgentRelations(
+	editor: Editor,
+	relations: AgentRelation[],
+	nodes: Record<NodeId, CanvasNode>
+): number {
+	const drawable = relations
+		.filter((relation) => nodes[relation.from] && nodes[relation.to] && relation.from !== relation.to)
+		.map((relation) => ({ ...relation, id: createRelationId() }))
+	if (!drawable.length) return 0
+
+	const pageId = editor.getCurrentPageId()
+
+	editor.markHistoryStoppingPoint('add agent relations')
+	editor.createShapes(
+		drawable.map((relation) => {
+			const from = nodeCenter(nodes[relation.from])
+			const to = nodeCenter(nodes[relation.to])
+			return {
+				id: relationIdToShapeId(relation.id),
+				type: ARROW_SHAPE_TYPE,
+				parentId: pageId,
+				x: from.x,
+				y: from.y,
+				props: {
+					start: { x: 0, y: 0 },
+					end: { x: to.x - from.x, y: to.y - from.y },
+					richText: plainTextToRichText(relation.label ?? ''),
+					// Grey and dashed: the docs' own "grey arrow" for what the AI reaches in and draws.
+					color: 'grey',
+					dash: 'dashed',
+				},
+				meta: {
+					[RELATION_META_KEY]: true,
+					[RELATION_GRAVITY_META_KEY]: DEFAULT_RELATION_GRAVITY,
+					createdBy: 'agent',
+				},
+			}
+		})
+	)
+	editor.createBindings(
+		drawable.flatMap((relation) => {
+			const arrowId = relationIdToShapeId(relation.id)
 			return [
 				binding(arrowId, nodeIdToShapeId(relation.from), 'start'),
 				binding(arrowId, nodeIdToShapeId(relation.to), 'end'),

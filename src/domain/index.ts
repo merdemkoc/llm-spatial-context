@@ -66,6 +66,10 @@ export {
 	DEFAULT_CLUSTER_MARGIN,
 } from '@/domain/clusterLayout'
 
+export type { IdeaPlacementOptions } from '@/domain/ideaPlacement'
+
+export { DEFAULT_IDEA_GAP, placeNewNotes } from '@/domain/ideaPlacement'
+
 export {
 	buildSpatialContext,
 	calculateSpatialInfluence,

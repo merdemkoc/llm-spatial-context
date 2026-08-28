@@ -111,3 +111,32 @@ export const FIELD_INK = `rgb(${FIELD_RGB})`
 export function fieldTint(alpha: number): string {
 	return `rgba(${FIELD_RGB}, ${alpha})`
 }
+
+/**
+ * The mark of a note the agent authored, again its own literal for the same reason as the
+ * field ink: teal is none of the other three claims — not the field's indigo, not tldraw's
+ * selection blue, not the grounding layer's hot pink — so an AI-made note is unmistakable at a
+ * glance. Used for the reflection's ghost ideas and, once accepted, the note's own accent.
+ */
+const AGENT_RGB = '13, 148, 136'
+
+export const AGENT_INK = `rgb(${AGENT_RGB})`
+
+/** The agent ink at a given alpha — the ghost idea's fill, an accepted note's tint. */
+export function agentTint(alpha: number): string {
+	return `rgba(${AGENT_RGB}, ${alpha})`
+}
+
+/**
+ * The companion's attention, while it speaks. A warm amber, distinct from every other overlay
+ * here — the field's indigo, the agent's teal, selection blue, grounding pink — so a spotlight
+ * on the notes a remark is about reads as its own, transient thing rather than any of them.
+ */
+const FOCUS_RGB = '217, 119, 6'
+
+export const FOCUS_INK = `rgb(${FOCUS_RGB})`
+
+/** The focus ink at a given alpha — the spotlight region's fill. */
+export function focusTint(alpha: number): string {
+	return `rgba(${FOCUS_RGB}, ${alpha})`
+}
