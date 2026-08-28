@@ -27,6 +27,7 @@ try {
 
 const { observe } = await import('./observe.ts')
 const { suggest } = await import('./suggest.ts')
+const { reflect } = await import('./reflect.ts')
 const { synthesize } = await import('./speak.ts')
 
 const app = new Hono()
@@ -59,6 +60,17 @@ app.post('/api/suggest', limit, async (c) => {
 		console.error('[suggest] failed:', error)
 		// Fail safe, like /api/observe: a broken suggestion is a decline, never a thrown error.
 		return c.json({ suggest: false, members: [], comment: '' })
+	}
+})
+
+app.post('/api/reflect', limit, async (c) => {
+	try {
+		const payload = await c.req.json()
+		return c.json(await reflect(payload))
+	} catch (error) {
+		console.error('[reflect] failed:', error)
+		// Fail safe, like the other routes: a broken reflection is an empty one.
+		return c.json({ comment: '', ideas: [] })
 	}
 })
 
