@@ -7,14 +7,9 @@
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { CompanionControls } from '@/canvas/ui/CompanionControls'
-import {
-	groupingSuggestion,
-	observationEnabled,
-	requestGrouping,
-	voiceEnabled,
-} from '@/companion/companionState'
+import { observationEnabled, voiceEnabled } from '@/companion/companionState'
 
 declare global {
 	var IS_REACT_ACT_ENVIRONMENT: boolean
@@ -27,8 +22,6 @@ beforeEach(() => {
 	globalThis.IS_REACT_ACT_ENVIRONMENT = true
 	observationEnabled.set(true)
 	voiceEnabled.set(true)
-	groupingSuggestion.set(null)
-	requestGrouping.set(() => {})
 	container = document.createElement('div')
 	document.body.append(container)
 	root = createRoot(container)
@@ -37,8 +30,6 @@ beforeEach(() => {
 afterEach(() => {
 	act(() => root.unmount())
 	container.remove()
-	groupingSuggestion.set(null)
-	requestGrouping.set(null)
 })
 
 function render() {
@@ -50,14 +41,6 @@ function checkbox(labelText: string): HTMLInputElement {
 		element.textContent?.includes(labelText)
 	)
 	return label!.querySelector('input') as HTMLInputElement
-}
-
-function suggestButton(): HTMLButtonElement {
-	const found = [...container.querySelectorAll('button')].find((element) =>
-		element.textContent?.includes('Suggest a grouping')
-	)
-	expect(found, 'no "Suggest a grouping" button').toBeDefined()
-	return found as HTMLButtonElement
 }
 
 describe('CompanionControls', () => {
@@ -83,38 +66,5 @@ describe('CompanionControls', () => {
 		act(() => checkbox('Voice').click())
 
 		expect(voiceEnabled.get()).toBe(false)
-	})
-
-	describe('the suggest-a-grouping button', () => {
-		it('asks the companion for a grouping when clicked', () => {
-			const request = vi.fn()
-			requestGrouping.set(request)
-			render()
-
-			act(() => suggestButton().click())
-
-			expect(request).toHaveBeenCalledTimes(1)
-		})
-
-		it('is disabled while observation is off', () => {
-			observationEnabled.set(false)
-			render()
-
-			expect(suggestButton().disabled).toBe(true)
-		})
-
-		it('is disabled while a grouping is already pending', () => {
-			groupingSuggestion.set({ generation: 1, members: ['a', 'b'], targets: [], rationale: 'x' })
-			render()
-
-			expect(suggestButton().disabled).toBe(true)
-		})
-
-		it('is disabled when no companion is mounted', () => {
-			requestGrouping.set(null)
-			render()
-
-			expect(suggestButton().disabled).toBe(true)
-		})
 	})
 })

@@ -9,12 +9,18 @@
  */
 import { ContextualFieldOverlay } from '@/canvas/ui/ContextualFieldOverlay'
 import { GroupingGhostOverlay } from '@/canvas/ui/GroupingGhostOverlay'
+import { IdeaGhostOverlay } from '@/canvas/ui/IdeaGhostOverlay'
+import { RelationGhostOverlay } from '@/canvas/ui/RelationGhostOverlay'
+import { CompanionFocusOverlay } from '@/canvas/ui/CompanionFocusOverlay'
 
 export function CanvasOverlays() {
 	return (
 		<>
 			<ContextualFieldOverlay />
+			<CompanionFocusOverlay />
 			<GroupingGhostOverlay />
+			<RelationGhostOverlay />
+			<IdeaGhostOverlay />
 		</>
 	)
 }

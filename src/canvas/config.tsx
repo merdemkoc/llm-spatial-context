@@ -20,7 +20,8 @@ import { PostItStylePanel } from '@/canvas/ui/PostItStylePanel'
 import { InspectorDock } from '@/canvas/ui/InspectorDock'
 import { CompanionBar } from '@/canvas/ui/CompanionBar'
 import { CanvasOverlays } from '@/canvas/ui/CanvasOverlays'
-import { GroupingControls } from '@/canvas/ui/GroupingControls'
+import { CanvasControls } from '@/canvas/ui/CanvasControls'
+import { CanvasAiActions } from '@/canvas/ui/CanvasAiActions'
 
 export const customShapeUtils = [PostItShapeUtil]
 
@@ -77,6 +78,9 @@ export const components: TLComponents = {
 			<ToolbarItem tool="hand" />
 			<ToolbarItem tool={POST_IT_SHAPE_TYPE} />
 			<ToolbarItem tool={RELATION_TOOL_ID} />
+			{/* The companion's on-demand actions, set off from the four tools by a divider.
+			    These are actions, not tools, so they are plain buttons rather than ToolbarItems. */}
+			<CanvasAiActions />
 			{/* tldraw's own tools, in its default order. Uncomment a line to put one back.
 			<ToolbarItem tool="draw" />
 			<ToolbarItem tool="eraser" />
@@ -140,11 +144,12 @@ export const components: TLComponents = {
 	OnTheCanvas: CanvasOverlays,
 
 	/**
-	 * Screen space, above the shapes: the accept/dismiss control for a pending grouping. It
-	 * must take pointer events, which the `OnTheCanvas` layer deliberately does not, so it
-	 * lives here rather than with the ghost it belongs to.
+	 * Screen space, above the shapes: the pointer-enabled controls for a pending proposal —
+	 * a grouping's accept/dismiss, or a reflection's idea list. They must take pointer events,
+	 * which the `OnTheCanvas` layer deliberately does not, so they live here rather than with
+	 * the ghosts they belong to. Composed through `CanvasControls`.
 	 */
-	InFrontOfTheCanvas: GroupingControls,
+	InFrontOfTheCanvas: CanvasControls,
 
 	/**
 	 * One Canvas is one page. Hiding the page menu keeps that true rather than
