@@ -67,15 +67,21 @@ import {
 } from '@/domain'
 import type { EpisodeContext, ObserverClient } from '@/companion/observerClient'
 import type { GroupingProposal, SuggestClient } from '@/companion/suggestClient'
+import type { IdeaProposal, ReflectClient, Reflection } from '@/companion/reflectClient'
 import type { VoiceClient } from '@/companion/voiceClient'
 import {
+	companionFocus,
 	companionPacing,
 	companionStage,
 	companionTranscript,
 	companionUtterance,
 	groupingSuggestion,
+	ideaSuggestions,
 	observationEnabled,
+	relationSuggestions,
 	voiceEnabled,
+	type GhostIdea,
+	type GhostRelation,
 } from '@/companion/companionState'
 
 /** How many recent comments to hand the model for anti-repetition. */
@@ -93,15 +99,6 @@ export const PROACTIVE_COOLDOWN_MS = 60_000
 
 /** Small slack added to the self-edit window so scheduling jitter can't leak the move through. */
 const AGENT_EDIT_GRACE_MS = 250
-
-/** The smallest counts spelled out, so the affirmation reads as a sentence rather than a figure. */
-const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten']
-
-/** The one line the companion says when a grouping is accepted. Deterministic — no model call. */
-export function groupingAffirmation(count: number): string {
-	const word = count < NUMBER_WORDS.length ? NUMBER_WORDS[count] : String(count)
-	return `There — those ${word} sit together now.`
-}
 
 /** A concrete grouping: the members to move and where. Mirrors the adapter's `GroupingPlan`. */
 export interface CompanionGroupingPlan {
@@ -153,8 +150,8 @@ export interface CompanionOptions {
 	planGrouping?: (memberIds: NodeId[]) => CompanionGroupingPlan | null
 	/**
 	 * Commit an accepted grouping — reposition the members — and report how many moved.
-	 * Injected because the write reaches the canvas; the companion owns only the affirmation
-	 * and the suppression of its own follow-up episode.
+	 * Injected because the write reaches the canvas; the companion owns only the comment on the
+	 * result and the suppression of its own follow-up episode.
 	 */
 	applyGrouping?: (plan: CompanionGroupingPlan) => number
 	/**
@@ -162,15 +159,42 @@ export interface CompanionOptions {
 	 * the default is a cooldown so the companion doesn't nag.
 	 */
 	shouldProposeGrouping?: (summary: EpisodeSummary, now: number) => boolean
+	/**
+	 * The whole-board reflection. Optional: without it the "Reflect" action does nothing.
+	 * Consulted only on demand.
+	 */
+	reflect?: ReflectClient
+	/**
+	 * Turn the reflection's proposed note texts into ghost ideas placed in open space. Injected
+	 * like `planGrouping`, because the placement reads the canvas.
+	 */
+	planIdeas?: (proposals: IdeaProposal[]) => GhostIdea[]
+	/**
+	 * Commit chosen ideas as agent-stamped notes, returning the new notes' ids in order — the
+	 * companion needs them to draw any arrows to a fresh note. Injected because the write reaches
+	 * the canvas.
+	 */
+	createAgentNotes?: (notes: { text: string; x: number; y: number }[]) => NodeId[]
+	/**
+	 * Draw agent-authored arrows between existing notes, reporting how many drew. Injected because
+	 * the write reaches the canvas.
+	 */
+	createAgentRelations?: (relations: { from: NodeId; to: NodeId; label?: string }[]) => number
 }
 
-/** The running companion. `dispose` tears it down; the rest are the grouping controls' handles. */
+/** The running companion. `dispose` tears it down; the rest are the canvas AI controls' handles. */
 export interface Companion {
 	dispose: () => void
-	/** Ask for a grouping now — the "✦ Suggest a grouping" button. */
-	requestGrouping: () => void
+	/** Ask for a grouping organised by `context` — the "✦ Suggest a grouping" button's prompt. */
+	requestGrouping: (context: string) => void
 	/** Commit the pending grouping, affirm it, and swallow the resulting self-edit episode. */
 	acceptGrouping: () => void
+	/** Reflect on the whole board through `persona` — the "✦ Reflect" button's chosen lens. */
+	requestReflection: (persona: string) => void
+	/** Commit the named ghost ideas as agent-stamped notes, and swallow the self-edit episode. */
+	commitIdeas: (ideaIds: string[]) => void
+	/** Commit the named ghost relations as agent-drawn arrows, and swallow the self-edit episode. */
+	commitRelations: (relationIds: string[]) => void
 }
 
 const EMPTY_CONTEXT: EpisodeContext = { labels: {}, relations: [] }
@@ -212,6 +236,10 @@ export function createCompanion({
 	planGrouping,
 	applyGrouping,
 	shouldProposeGrouping,
+	reflect,
+	planIdeas,
+	createAgentNotes,
+	createAgentRelations,
 }: CompanionOptions): Companion {
 	let pending: PendingThought | null = null
 	let inFlight: AbortController | null = null
@@ -311,40 +339,78 @@ export function createCompanion({
 	 * render a voice for it and release the words as playback reports them. Owns the stage and
 	 * the utterance for its generation only, so a newer thought taking over is never overwritten.
 	 */
-	const speakComment = async (comment: string, mine: number) => {
+	const speakComment = async (
+		comment: string,
+		mine: number,
+		focus: NodeId[] = [],
+		{ signal, onLand }: { signal?: AbortSignal; onLand?: () => void } = {}
+	) => {
 		const owns = () => mine === generation && !disposed
+		// How a landed remark ends. An observation passes `settle`, so reaching the user
+		// vindicates the pause and the thought stops being killable; a grouping or reflection
+		// has no pending thought behind it and just drops the thinking hint.
+		const land = onLand ?? (() => companionStage.set('idle'))
 		if (!voiceEnabled.get()) {
-			// Nothing to wait for, so the remark is the whole remark, immediately.
-			companionStage.set('idle')
+			// Nothing to wait for, so the remark is the whole remark, immediately. Nothing is being
+			// spoken, so there is nothing to highlight either.
+			land()
 			return
 		}
 
 		companionStage.set('composing')
 		try {
 			await voice.speak(comment, {
+				...(signal ? { signal } : {}),
 				onStart: () => {
 					if (!owns()) return
 					// The hint comes down exactly as the voice comes up: one hands over to the
-					// other, so there is never a silent sentence sitting on screen.
-					companionStage.set('idle')
+					// other, so there is never a silent sentence sitting on screen. The notes the
+					// remark is about light up for as long as it is spoken.
+					land()
 					companionUtterance.set({ comment, fraction: 0 })
+					companionFocus.set(focus)
 				},
 				onProgress: (fraction) => {
 					if (!owns()) return
 					// Done speaking: drop the utterance so the bar falls back to the transcript's
-					// newest entry, which is this same sentence in full.
-					if (fraction >= 1) companionUtterance.set(null)
-					else companionUtterance.set({ comment, fraction })
+					// newest entry, and let the highlight go.
+					if (fraction >= 1) {
+						companionUtterance.set(null)
+						companionFocus.set([])
+					} else {
+						companionUtterance.set({ comment, fraction })
+					}
 				},
 			})
 		} catch {
 			// A blocked or failed playback shouldn't take down the loop — but it must not leave
 			// the remark hidden behind a thinking hint that will never clear either.
 			if (owns()) {
-				companionStage.set('idle')
+				land()
 				companionUtterance.set(null)
+				companionFocus.set([])
 			}
 		}
+	}
+
+	/** The notes an episode touched — what an observation reacts to, and so what it highlights. */
+	const episodeFocus = (summary: EpisodeSummary): NodeId[] => {
+		const ids = new Set<NodeId>()
+		for (const event of summary.structural) {
+			const { nodeId, source, target } = event as {
+				nodeId?: NodeId
+				source?: NodeId
+				target?: NodeId
+			}
+			if (nodeId) ids.add(nodeId)
+			if (source) ids.add(source)
+			if (target) ids.add(target)
+		}
+		for (const pair of summary.pairs) {
+			ids.add(pair.source)
+			ids.add(pair.target)
+		}
+		return [...ids]
 	}
 
 	/**
@@ -354,7 +420,8 @@ export function createCompanion({
 	 */
 	const runSuggestion = async (
 		trigger: 'demand' | 'proactive',
-		boardSummary: BoardSummary | undefined
+		boardSummary: BoardSummary | undefined,
+		intent?: string
 	) => {
 		if (!suggest || !planGrouping || !boardSummary) return
 
@@ -365,6 +432,7 @@ export function createCompanion({
 		inFlight = controller
 		companionStage.set('observing')
 		companionUtterance.set(null)
+		companionFocus.set([])
 		// Count the cooldown from the attempt, not just a success, so repeated declines on a
 		// quiet canvas can't hammer the API.
 		if (trigger === 'proactive') lastProactiveAt = now()
@@ -372,7 +440,7 @@ export function createCompanion({
 		let proposal: GroupingProposal | null = null
 		try {
 			proposal = await suggest.suggest(
-				{ board: boardSummary, trigger, recentComments: recentComments() },
+				{ board: boardSummary, trigger, recentComments: recentComments(), intent },
 				controller.signal
 			)
 		} catch {
@@ -400,7 +468,61 @@ export function createCompanion({
 			rationale: proposal!.rationale,
 		})
 		record(proposal!.rationale)
-		await speakComment(proposal!.rationale, mine)
+		await speakComment(proposal!.rationale, mine, plan.members)
+	}
+
+	/**
+	 * Reflect on the whole board: a spoken reading of it, plus a few new notes ghosted in open
+	 * space to accept or dismiss. On demand only. Shares the generation/in-flight discipline.
+	 */
+	const runReflection = async (boardSummary: BoardSummary | undefined, persona: string) => {
+		if (!reflect || !planIdeas || !boardSummary) return
+
+		generation += 1
+		const mine = generation
+		inFlight?.abort()
+		const controller = new AbortController()
+		inFlight = controller
+		companionStage.set('observing')
+		companionUtterance.set(null)
+		companionFocus.set([])
+
+		let reflection: Reflection | null = null
+		try {
+			reflection = await reflect.reflect({ board: boardSummary, persona }, controller.signal)
+		} catch {
+			// Aborted or failed — nothing to say or add.
+		}
+
+		if (mine !== generation || disposed) return
+		inFlight = null
+
+		if (!reflection) {
+			companionStage.set('idle')
+			return
+		}
+
+		// Ghost the proposed ideas and arrows first, so the preview is on the canvas as the
+		// reading is spoken.
+		if (reflection.ideas.length > 0) ideaSuggestions.set(planIdeas(reflection.ideas))
+		const proposedRelations = reflection.relations ?? []
+		if (proposedRelations.length > 0) {
+			relationSuggestions.set(
+				proposedRelations.map((relation, index): GhostRelation => ({
+					id: `rel-${index}`,
+					from: relation.from,
+					to: relation.to,
+					...(relation.label ? { label: relation.label } : {}),
+				}))
+			)
+		}
+
+		if (reflection.comment) {
+			record(reflection.comment)
+			await speakComment(reflection.comment, mine, reflection.focus ?? [])
+		} else {
+			companionStage.set('idle')
+		}
 	}
 
 	const handleEpisode = async (summary: EpisodeSummary, events: SpatialEvent[]) => {
@@ -413,12 +535,12 @@ export function createCompanion({
 			if (carried.length > 0) carried = events
 			return
 		}
-		// The companion's own grouping move finalizes as an episode moments after an accept.
-		// Skip it: it has already affirmed the grouping, and narrating or re-grouping its own
-		// action would loop.
+		// The companion's own edit — an accepted grouping or committed ideas — finalizes as an
+		// episode moments later. Skip it: narrating or re-acting on its own work would loop.
 		if (now() < agentEditUntil) return
 		// A proposal is on the canvas awaiting a decision — never talk over a pending ghost.
 		if (groupingSuggestion.get()) return
+		if (ideaSuggestions.get().length > 0 || relationSuggestions.get().length > 0) return
 
 		generation += 1
 		const mine = generation
@@ -436,13 +558,14 @@ export function createCompanion({
 		companionStage.set('observing')
 		// The previous remark's performance is over the moment a newer thought starts: its
 		// half-revealed sentence must not resurface behind this one, least of all if this one
-		// turns out to be silence. The transcript still has it whole.
+		// turns out to be silence. The transcript still has it whole, and its highlight goes.
 		//
 		// The sound goes with the text, and in that order — the utterance is what says a clip
 		// is playing at all. Clearing one without the other leaves the old remark talking
 		// over the new thought with nothing on screen behind it.
 		if (companionUtterance.get() !== null) voice.stop()
 		companionUtterance.set(null)
+		companionFocus.set([])
 
 		// Built once and shared: the observer reads it as context, and a proactive suggestion
 		// reuses it rather than reading the canvas twice.
@@ -502,20 +625,65 @@ export function createCompanion({
 		// Record before speaking so the transcript fills even with voice off, and so a
 		// playback failure can't lose the observation.
 		record(comment)
-		await speakComment(comment, mine)
+		await speakComment(comment, mine, episodeFocus(summary), {
+			signal: controller.signal,
+			onLand: settle,
+		})
 	}
 
-	/** Ask for a grouping now. Bypasses the proactive gates — the user asked. */
-	const requestGrouping = () => {
+	/**
+	 * Ask for a grouping now, organised by the user's intent. Bypasses the proactive gates —
+	 * the user asked, and told the companion what they are grouping by.
+	 */
+	const requestGrouping = (context: string) => {
 		if (disposed) return
 		// A proposal is already on the canvas; deciding it comes first.
 		if (groupingSuggestion.get()) return
+		if (ideaSuggestions.get().length > 0 || relationSuggestions.get().length > 0) return
 		// Respect the master switch: an asleep companion doesn't reach into the canvas.
 		if (!observationEnabled.get()) return
-		void runSuggestion('demand', board?.())
+		void runSuggestion('demand', board?.(), context)
 	}
 
-	/** Commit the pending grouping, affirm it once, and swallow the resulting self-edit episode. */
+	/**
+	 * Read the board after a change the companion or user just made, and say what the board is
+	 * now — its new state and how the change shifts the overall picture. This is what the
+	 * companion says after committing its own edits, in place of a canned line: a fresh comment,
+	 * not a receipt. Shares the generation/in-flight discipline; the self-edit episode that
+	 * follows is swallowed (see `agentEditUntil`) so this is the only remark about the change.
+	 */
+	const commentOnChange = async (recentChange: string) => {
+		if (!reflect || !board) return
+
+		const boardSummary = board()
+		generation += 1
+		const mine = generation
+		inFlight?.abort()
+		const controller = new AbortController()
+		inFlight = controller
+		companionStage.set('observing')
+		companionUtterance.set(null)
+		companionFocus.set([])
+
+		let reflection: Reflection | null = null
+		try {
+			reflection = await reflect.reflect({ board: boardSummary, recentChange }, controller.signal)
+		} catch {
+			// Aborted or failed — nothing to say.
+		}
+
+		if (mine !== generation || disposed) return
+		inFlight = null
+
+		if (reflection && reflection.comment) {
+			record(reflection.comment)
+			await speakComment(reflection.comment, mine, reflection.focus ?? [])
+		} else {
+			companionStage.set('idle')
+		}
+	}
+
+	/** Commit the pending grouping, comment on the board's new state, and swallow the self-edit episode. */
 	const acceptGrouping = () => {
 		if (disposed) return
 		const suggestion = groupingSuggestion.get()
@@ -525,18 +693,80 @@ export function createCompanion({
 		// and is caught by the self-edit window below instead.
 		groupingSuggestion.set(null)
 		const moved = applyGrouping?.({ members: suggestion.members, targets: suggestion.targets }) ?? 0
-		// Whatever moved, our edit finalizes as an episode about `idleMs` from now; skip it.
+		// Whatever moved, our edit finalizes as an episode about `idleMs` from now; skip it, so
+		// the comment below is the only remark about the change.
 		agentEditUntil = now() + (idleMs ?? EPISODE_IDLE_MS) + AGENT_EDIT_GRACE_MS
 		if (moved <= 0) return
 
-		// Affirm once, built from what we already know — no model call, so no wait and no loop.
-		generation += 1
-		const mine = generation
-		inFlight?.abort()
-		inFlight = null
-		const affirmation = groupingAffirmation(moved)
-		record(affirmation)
-		void speakComment(affirmation, mine)
+		const change = suggestion.rationale
+			? `pulled ${moved} ideas together into a cluster — ${suggestion.rationale}`
+			: `pulled ${moved} ideas together into a cluster`
+		void commentOnChange(change)
+	}
+
+	/** Reflect on the whole board now, through the chosen persona. Bypasses the proactive gates. */
+	const requestReflection = (persona: string) => {
+		if (disposed) return
+		if (!observationEnabled.get()) return
+		// A decision is already pending on the canvas; settle it first.
+		if (groupingSuggestion.get()) return
+		if (ideaSuggestions.get().length > 0 || relationSuggestions.get().length > 0) return
+		void runReflection(board?.(), persona)
+	}
+
+	/** Commit the named ghost ideas as agent-stamped notes, and swallow the self-edit episode. */
+	const commitIdeas = (ideaIds: string[]) => {
+		if (disposed) return
+		const pending = ideaSuggestions.get()
+		const chosen = pending.filter((idea) => ideaIds.includes(idea.id))
+		if (chosen.length === 0) return
+
+		const createdIds =
+			createAgentNotes?.(chosen.map((idea) => ({ text: idea.text, x: idea.x, y: idea.y }))) ?? []
+		// A new note that asked to connect gets its arrow too — from the fresh note to the
+		// existing one it named — so accepting the idea draws the link in the same step.
+		const arrows = chosen
+			.map((idea, index) =>
+				idea.connectTo && createdIds[index]
+					? { from: createdIds[index], to: idea.connectTo, ...(idea.connectLabel ? { label: idea.connectLabel } : {}) }
+					: null
+			)
+			.filter((arrow): arrow is { from: NodeId; to: NodeId; label?: string } => arrow !== null)
+		if (arrows.length > 0) createAgentRelations?.(arrows)
+
+		// Drop the committed ideas from the pending set regardless of the write's result, so a
+		// failed write can't strand a ghost that no longer maps to anything.
+		ideaSuggestions.set(pending.filter((idea) => !ideaIds.includes(idea.id)))
+		if (createdIds.length > 0) {
+			// Our own notes finalize as an episode; skip it so the comment below is the only remark.
+			agentEditUntil = now() + (idleMs ?? EPISODE_IDLE_MS) + AGENT_EDIT_GRACE_MS
+			const count = createdIds.length
+			void commentOnChange(`added ${count} new ${count === 1 ? 'idea' : 'ideas'} to the board`)
+		}
+	}
+
+	/** Commit the named ghost relations as agent-drawn arrows, and swallow the self-edit episode. */
+	const commitRelations = (relationIds: string[]) => {
+		if (disposed) return
+		const pending = relationSuggestions.get()
+		const chosen = pending.filter((relation) => relationIds.includes(relation.id))
+		if (chosen.length === 0) return
+
+		const drawn =
+			createAgentRelations?.(
+				chosen.map((relation) => ({
+					from: relation.from,
+					to: relation.to,
+					...(relation.label ? { label: relation.label } : {}),
+				}))
+			) ?? 0
+		relationSuggestions.set(pending.filter((relation) => !relationIds.includes(relation.id)))
+		if (drawn > 0) {
+			agentEditUntil = now() + (idleMs ?? EPISODE_IDLE_MS) + AGENT_EDIT_GRACE_MS
+			void commentOnChange(
+				`drew ${drawn} new ${drawn === 1 ? 'connection' : 'connections'} between ideas`
+			)
+		}
 	}
 
 	// Subscribed before the recorder, deliberately. Both listen to the same stream and are
@@ -575,12 +805,15 @@ export function createCompanion({
 		voice.stop()
 		companionStage.set('idle')
 		companionUtterance.set(null)
+		companionFocus.set([])
 		// The rhythm belonged to this mount's user and this mount's canvas. A StrictMode
 		// remount starts from the resting pause, like a fresh session.
 		companionPacing.set({ idleMs: idleMs ?? EPISODE_IDLE_MS, dropped: 0 })
-		// A pending ghost belongs to the canvas that is going away.
+		// Pending proposals belong to the canvas that is going away.
 		groupingSuggestion.set(null)
+		ideaSuggestions.set([])
+		relationSuggestions.set([])
 	}
 
-	return { dispose, requestGrouping, acceptGrouping }
+	return { dispose, requestGrouping, acceptGrouping, requestReflection, commitIdeas, commitRelations }
 }

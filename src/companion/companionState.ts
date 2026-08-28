@@ -84,6 +84,14 @@ export interface Utterance {
 export const companionUtterance = atom<Utterance | null>('companion utterance', null)
 
 /**
+ * The notes the current remark is about — highlighted on the canvas while it is spoken, then
+ * cleared. Empty when the companion is silent or talking about the board as a whole. Comes from
+ * the model's `focus` for reflections, the members for a grouping, or the changed notes for an
+ * observation. Module-scope for the same reason as the other companion atoms.
+ */
+export const companionFocus = atom<NodeId[]>('companion focus', [])
+
+/**
  * A grouping the companion is proposing right now — the ghost preview on the canvas,
  * awaiting accept or dismiss. `null` between proposals.
  *
@@ -113,5 +121,59 @@ export const groupingSuggestion = atom<GroupingSuggestion | null>(
  * mounted, which is also the controls' disabled state. (Dismiss needs no handle — it just
  * clears `groupingSuggestion`, since it changes nothing on the canvas.)
  */
-export const requestGrouping = atom<(() => void) | null>('companion request grouping', null)
+export const requestGrouping = atom<((context: string) => void) | null>(
+	'companion request grouping',
+	null
+)
 export const acceptGrouping = atom<(() => void) | null>('companion accept grouping', null)
+
+/**
+ * A new note the reflection is proposing — a ghost on the canvas, awaiting a decision. The
+ * model supplies the text and whether it is an idea or a question; the client computes where
+ * it would land. On accept it becomes a real, agent-stamped post-it.
+ */
+export interface GhostIdea {
+	/** Stable within one reflection, for React keys and per-idea accept/dismiss. */
+	id: string
+	text: string
+	kind: 'idea' | 'question'
+	/** Where the note would land — world top-left, the `spatial.x/y` frame. */
+	x: number
+	y: number
+	/** An existing note this new one would connect to with an arrow, if any. */
+	connectTo?: NodeId
+	/** The label for that connection. */
+	connectLabel?: string
+}
+
+/** The reflection's pending new-note proposals, ghost-previewed on the canvas. Empty when none. */
+export const ideaSuggestions = atom<GhostIdea[]>('companion idea suggestions', [])
+
+/**
+ * A proposed arrow between two existing notes — the "grey arrow" the agent draws. Ghost-previewed
+ * dashed on the canvas, awaiting accept or dismiss. `from`/`to` are existing note ids.
+ */
+export interface GhostRelation {
+	id: string
+	from: NodeId
+	to: NodeId
+	label?: string
+}
+
+/** The reflection's pending arrow proposals between existing notes. Empty when none. */
+export const relationSuggestions = atom<GhostRelation[]>('companion relation suggestions', [])
+
+/**
+ * Imperative handles the running companion publishes for the canvas AI buttons and the idea
+ * controls. `requestReflection` runs a whole-board reflection; `commitIdeas` turns the named
+ * ghost ideas into agent-stamped notes. `null` while no companion is mounted.
+ */
+export const requestReflection = atom<((persona: string) => void) | null>(
+	'companion request reflection',
+	null
+)
+export const commitIdeas = atom<((ideaIds: string[]) => void) | null>('companion commit ideas', null)
+export const commitRelations = atom<((relationIds: string[]) => void) | null>(
+	'companion commit relations',
+	null
+)
