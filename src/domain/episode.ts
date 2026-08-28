@@ -29,6 +29,11 @@ import type { SpatialEventStream } from '@/domain/eventStream'
  * lowering it is a pause mid-arrangement being read as the end of an episode, which
  * means more episodes and so more chances to speak; `isTrivialEpisode` and the prompt's
  * silence-by-default are what keep that from becoming chatter. This is the dial if it does.
+ *
+ * The *resting* pause, not the only one: the companion hands `idleMs` a getter backed by
+ * `createIdleBackoff`, which raises the pause when a gesture turns out to have been
+ * misread as finished and walks it back down when one lands cleanly. This is where that
+ * walk starts and ends.
  */
 export const EPISODE_IDLE_MS = 1200
 
@@ -82,12 +87,26 @@ export interface EpisodeSummary {
 export type Schedule = (fn: () => void, ms: number) => () => void
 
 export interface EpisodeRecorderOptions {
-	/** Called once per finalized episode, after the idle pause. */
-	onEpisode: (summary: EpisodeSummary) => void
+	/**
+	 * Called once per finalized episode, after the idle pause.
+	 *
+	 * `events` is the buffer the summary was folded from, verbatim. The fold is lossy by
+	 * design, so a caller that may need to *re-fold* this episode together with the next one
+	 * — because the pause turned out to be a false ending — cannot work from the summary.
+	 */
+	onEpisode: (summary: EpisodeSummary, events: SpatialEvent[]) => void
 	/** Timer source; defaults to `setTimeout`. Injected so tests need no real clock. */
 	schedule?: Schedule
-	/** Idle pause before an episode is finalized. Defaults to `EPISODE_IDLE_MS`. */
-	idleMs?: number
+	/**
+	 * Idle pause before an episode is finalized, or a getter for one. Defaults to
+	 * `EPISODE_IDLE_MS`.
+	 *
+	 * A getter is read each time the timer is armed — so every event — rather than once at
+	 * construction. That is what lets a caller pacing itself adaptively (`createIdleBackoff`)
+	 * have a raised pause govern the very gesture that raised it, instead of only the one
+	 * after it.
+	 */
+	idleMs?: number | (() => number)
 	/** Events one episode retains before dropping the oldest. Defaults to `EPISODE_BUFFER_LIMIT`. */
 	bufferLimit?: number
 }
@@ -191,7 +210,8 @@ const defaultSchedule: Schedule = (fn, ms) => {
  * Buffer a live stream and finalize an episode once it falls quiet.
  *
  * Every event resets the idle timer; when the canvas has been still for `idleMs`, the
- * buffer is folded and handed to `onEpisode`, then cleared for the next episode. Returns
+ * buffer is folded and handed to `onEpisode` alongside the events it was folded from, then
+ * cleared for the next episode. Returns
  * a disposer that unsubscribes and cancels any pending finalize — collect it alongside
  * the other `handleMount` disposers so a React StrictMode remount can't leave two
  * recorders running.
@@ -208,12 +228,14 @@ export function createEpisodeRecorder(
 	let buffer: SpatialEvent[] = []
 	let cancel: (() => void) | null = null
 
+	const pauseMs = typeof idleMs === 'function' ? idleMs : () => idleMs
+
 	const finalize = () => {
 		cancel = null
 		if (buffer.length === 0) return
 		const events = buffer
 		buffer = []
-		onEpisode(buildEpisodeSummary(events))
+		onEpisode(buildEpisodeSummary(events), events)
 	}
 
 	const unsubscribe = stream.subscribe((event) => {
@@ -223,7 +245,7 @@ export function createEpisodeRecorder(
 		// above any real gesture: a backstop, not a working bound.
 		if (buffer.length > bufferLimit) buffer = buffer.slice(-bufferLimit)
 		cancel?.()
-		cancel = schedule(finalize, idleMs)
+		cancel = schedule(finalize, pauseMs())
 	})
 
 	return () => {

@@ -13,6 +13,7 @@
  * canvas.
  */
 import { atom } from 'tldraw'
+import { EPISODE_IDLE_MS } from '@/domain'
 
 /** Whether finalized episodes are sent to the model. Off means the companion is asleep. */
 export const observationEnabled = atom('companion observation enabled', true)
@@ -32,6 +33,28 @@ export const voiceEnabled = atom('companion voice enabled', true)
 export type CompanionStage = 'idle' | 'observing' | 'composing'
 
 export const companionStage = atom<CompanionStage>('companion stage', 'idle')
+
+/** How the companion is pacing itself: the pause it waits out, and what that cost. */
+export interface Pacing {
+	/** The quiet the canvas must hold before the next episode closes. */
+	idleMs: number
+	/** Thoughts killed by the user coming back before one could land. */
+	dropped: number
+}
+
+/**
+ * The adaptive pause, made visible.
+ *
+ * The pause moves on its own (`createIdleBackoff`), and an invisible number that moves on
+ * its own is indistinguishable from a bug the moment it surprises anyone. This is the same
+ * argument the event log and the canonical JSON panel already make about spatial state: if
+ * the app derives something, the app should be willing to show it. Read by
+ * `CompanionControls`, next to the switches that decide whether any of this runs at all.
+ */
+export const companionPacing = atom<Pacing>('companion pacing', {
+	idleMs: EPISODE_IDLE_MS,
+	dropped: 0,
+})
 
 /** One spoken (or would-be-spoken) observation, with the moment it was made. */
 export interface TranscriptEntry {

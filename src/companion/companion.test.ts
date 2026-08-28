@@ -7,11 +7,19 @@
  * anti-repetition — is exercised with no network and no real timers.
  */
 import { beforeEach, describe, expect, it } from 'vitest'
-import { createEventStream, type Schedule, type SpatialEvent } from '@/domain'
+import {
+	createEventStream,
+	EPISODE_IDLE_MS,
+	IDLE_BACKOFF_CAP_MS,
+	IDLE_BACKOFF_MARGIN_MS,
+	type Schedule,
+	type SpatialEvent,
+} from '@/domain'
 import { createCompanion } from '@/companion/companion'
 import type { ObserveRequest, ObserverClient, ObserverDecision } from '@/companion/observerClient'
 import type { VoiceClient } from '@/companion/voiceClient'
 import {
+	companionPacing,
 	companionStage,
 	companionTranscript,
 	companionUtterance,
@@ -35,10 +43,19 @@ const influence = (
 const meaningful = () => influence('a', 'b', 0.04, 0.58)
 const trivial = () => influence('a', 'b', 0.36, 0.39)
 
+const moved = (nodeId: string): SpatialEvent => ({
+	type: 'node_moved',
+	nodeId,
+	previous: { x: 0, y: 0 },
+	current: { x: 10, y: 10 },
+})
+
 function controllableSchedule() {
 	let pending: (() => void) | null = null
-	const schedule: Schedule = (fn) => {
+	let lastMs = 0
+	const schedule: Schedule = (fn, ms) => {
 		pending = fn
+		lastMs = ms
 		return () => {
 			if (pending === fn) pending = null
 		}
@@ -49,6 +66,27 @@ function controllableSchedule() {
 			const fn = pending
 			pending = null
 			fn?.()
+		},
+		/** The pause the recorder last armed — the adaptive one, once it starts moving. */
+		get lastMs() {
+			return lastMs
+		},
+	}
+}
+
+/**
+ * A clock the test advances by hand.
+ *
+ * The pacing policy is fed a *measured* quiet — how long the recorder waited plus how long
+ * the user stayed away after it fired — so a test that cannot move the clock cannot say
+ * what the policy should have concluded.
+ */
+function controllableClock() {
+	let at = 0
+	return {
+		now: () => at,
+		advance: (ms: number) => {
+			at += ms
 		},
 	}
 }
@@ -136,6 +174,7 @@ beforeEach(() => {
 	companionStage.set('idle')
 	companionTranscript.set([])
 	companionUtterance.set(null)
+	companionPacing.set({ idleMs: EPISODE_IDLE_MS, dropped: 0 })
 })
 
 describe('createCompanion', () => {
@@ -486,6 +525,34 @@ describe('createCompanion', () => {
 			])
 		})
 
+		it('stops the clip a newer remark supersedes', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const voiceFake = fakeVoice({ manual: true })
+			createCompanion({
+				stream,
+				observer,
+				voice: voiceFake.voice,
+				schedule: timer.schedule,
+			})
+
+			stream.emit([meaningful()])
+			timer.flush()
+			calls[0].resolve({ speak: true, comment: 'The first remark.' })
+			await tick()
+			voiceFake.plays[0].start()
+
+			// A newer episode takes over. Clearing the text is not enough: without stopping
+			// the audio the old clip carries on talking with nothing on screen behind it.
+			stream.emit([influence('c', 'd', 0.1, 0.7)])
+			timer.flush()
+
+			// Exactly once, and only because something was playing: a `stop()` on every
+			// episode would make this assertion pass without the behaviour existing.
+			expect(voiceFake.stopped).toBe(1)
+		})
+
 		it('ignores progress from a clip a newer episode has superseded', async () => {
 			const stream = createEventStream()
 			const timer = controllableSchedule()
@@ -510,6 +577,257 @@ describe('createCompanion', () => {
 
 			expect(companionUtterance.get()).toBeNull()
 			expect(companionStage.get()).not.toBe('idle')
+		})
+	})
+
+	/**
+	 * The pause before a thought starts is a guess about the user's rhythm, and the ~4.7s
+	 * of model call and synthesis behind it is time the canvas can change out from under
+	 * the answer. These are the two halves of the response: kill the thought the moment
+	 * the user is back, and let the guess learn from having been wrong.
+	 */
+	describe('pacing itself against the user', () => {
+		it('drops the thought the moment the user comes back, not when the next episode closes', () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice } = fakeVoice()
+			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+
+			stream.emit([meaningful()])
+			timer.flush()
+			expect(companionStage.get()).toBe('observing')
+
+			// One event, no flush: the next episode is still being buffered. The old code
+			// waited for it to close before aborting, which left a stale answer free to
+			// arrive and be spoken over the gesture in progress.
+			stream.emit([influence('c', 'd', 0.1, 0.7)])
+
+			expect(calls[0].signal?.aborted).toBe(true)
+			expect(companionStage.get()).toBe('idle')
+		})
+
+		it('discards an answer that arrives after the user came back', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice, spoken } = fakeVoice()
+			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+
+			stream.emit([meaningful()])
+			timer.flush()
+			stream.emit([influence('c', 'd', 0.1, 0.7)])
+
+			// The real observer may well have sent the request already and answer anyway.
+			calls[0].resolve({ speak: true, comment: 'about a canvas that has moved on' })
+			await tick()
+
+			expect(spoken).toEqual([])
+			expect(companionTranscript.get()).toEqual([])
+			expect(companionStage.get()).toBe('idle')
+		})
+
+		it('abandons a remark whose voice has not arrived yet, but keeps the record of it', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice, plays } = fakeVoice({ manual: true })
+			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+
+			stream.emit([meaningful()])
+			timer.flush()
+			calls[0].resolve({ speak: true, comment: 'A remark nobody will hear.' })
+			await tick()
+			expect(companionStage.get()).toBe('composing')
+
+			stream.emit([influence('c', 'd', 0.1, 0.7)])
+
+			expect(companionStage.get()).toBe('idle')
+
+			// Synthesis finishing after the fact must not put the sentence on screen: the
+			// canvas it described is gone. The transcript still has it, because that is the
+			// record of what the companion decided, not of what it managed to say.
+			plays[0].start()
+
+			expect(companionUtterance.get()).toBeNull()
+			expect(companionTranscript.get().map((entry) => entry.comment)).toEqual([
+				'A remark nobody will hear.',
+			])
+		})
+
+		it('leaves a remark it has already begun speaking alone', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const voiceFake = fakeVoice({ manual: true })
+			createCompanion({
+				stream,
+				observer,
+				voice: voiceFake.voice,
+				schedule: timer.schedule,
+			})
+
+			stream.emit([meaningful()])
+			timer.flush()
+			calls[0].resolve({ speak: true, comment: 'Halfway through this one.' })
+			await tick()
+			voiceFake.plays[0].start()
+
+			// Touching the board mid-sentence is not a reason to cut a sentence off mid-word.
+			// It has been decided and it is half-heard; the remark rides it out.
+			stream.emit([influence('c', 'd', 0.1, 0.7)])
+
+			expect(voiceFake.stopped).toBe(0)
+			expect(companionUtterance.get()?.comment).toBe('Halfway through this one.')
+			expect(companionPacing.get().dropped).toBe(0)
+		})
+
+		it('carries the killed gesture forward, so the next remark describes the whole arc', () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice } = fakeVoice()
+			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+
+			stream.emit([influence('a', 'b', 0.04, 0.58)])
+			timer.flush()
+			// The user resumes, killing that thought and pushing the pair further.
+			stream.emit([influence('a', 'b', 0.58, 0.9)])
+			timer.flush()
+
+			// Not 0.58. The interrupted episode held the arc's starting point, and losing it
+			// would leave the observer describing the tail of a gesture as if it were all of it.
+			expect(calls[1].request.episode.pairs).toEqual([
+				{
+					source: 'a',
+					target: 'b',
+					before: { influence: 0.04 },
+					after: { influence: 0.9 },
+					transitions: ['influence_changed'],
+				},
+			])
+		})
+
+		it('keeps an open arc whole when the episode it merges into reads as trivial', () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice } = fakeVoice()
+			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+
+			stream.emit([influence('a', 'b', 0.04, 0.58)])
+			timer.flush()
+
+			// The user comes back and undoes most of it, taking a node with them. Merged with
+			// the killed episode this nets out to almost nothing, so the local gate drops it —
+			// but dropping the *episode* must not drop the arc, or the move rides along in
+			// nothing and the eventual remark describes a canvas that never existed.
+			stream.emit([influence('a', 'b', 0.58, 0.06), moved('z')])
+			timer.flush()
+			expect(calls).toHaveLength(1)
+
+			stream.emit([influence('a', 'b', 0.06, 0.7)])
+			timer.flush()
+
+			expect(calls).toHaveLength(2)
+			expect(calls[1].request.episode.structural).toEqual([moved('z')])
+			expect(calls[1].request.episode.pairs[0].before).toEqual({ influence: 0.04 })
+		})
+
+		it('stretches the pause past the rhythm that fooled it, then eases back', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const clock = controllableClock()
+			const { observer, calls } = fakeObserver()
+			const { voice } = fakeVoice()
+			createCompanion({ stream, observer, voice, schedule: timer.schedule, now: clock.now })
+
+			stream.emit([meaningful()])
+			expect(timer.lastMs).toBe(EPISODE_IDLE_MS)
+
+			// The episode closes on schedule, and the user comes back half a second later —
+			// so 1.7s of quiet was not the end of anything.
+			clock.advance(EPISODE_IDLE_MS)
+			timer.flush()
+			clock.advance(500)
+			stream.emit([influence('c', 'd', 0.1, 0.7)])
+
+			// Past the 1.7s that fooled it, by the margin — and armed for the gesture in
+			// progress, not merely for the one after it.
+			const stretched = EPISODE_IDLE_MS + 500 + IDLE_BACKOFF_MARGIN_MS
+			expect(companionPacing.get()).toEqual({ idleMs: stretched, dropped: 1 })
+			expect(timer.lastMs).toBe(stretched)
+
+			// This one lands: the longer pause was long enough, so half the penalty is
+			// handed back rather than the companion staying cautious for the whole session.
+			timer.flush()
+			calls[1].resolve({ speak: true, comment: 'This one lands.' })
+			await tick()
+
+			expect(companionPacing.get().idleMs).toBe(EPISODE_IDLE_MS + (stretched - EPISODE_IDLE_MS) / 2)
+		})
+
+		it('never stretches past the ceiling', () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const clock = controllableClock()
+			const { observer } = fakeObserver()
+			const { voice } = fakeVoice()
+			createCompanion({ stream, observer, voice, schedule: timer.schedule, now: clock.now })
+
+			// A user arranging in bursts, interrupting every thought.
+			for (let i = 0; i < 12; i += 1) {
+				clock.advance(timer.lastMs)
+				timer.flush()
+				clock.advance(300)
+				stream.emit([influence('a', 'b', 0.04 + i / 100, 0.58 + i / 100)])
+			}
+
+			expect(companionPacing.get().idleMs).toBe(IDLE_BACKOFF_CAP_MS)
+			expect(timer.lastMs).toBe(IDLE_BACKOFF_CAP_MS)
+		})
+
+		it('does not penalise a pause no thought was waiting on', () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer } = fakeObserver()
+			const { voice } = fakeVoice()
+			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+
+			// The local gate dropped this one, so nothing was in flight to interrupt and the
+			// pause was never shown to be too short.
+			stream.emit([trivial()])
+			timer.flush()
+			stream.emit([trivial()])
+
+			expect(companionPacing.get()).toEqual({ idleMs: EPISODE_IDLE_MS, dropped: 0 })
+		})
+
+		it('resets the pacing readout on teardown', () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const clock = controllableClock()
+			const { observer } = fakeObserver()
+			const { voice } = fakeVoice()
+			const dispose = createCompanion({
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+				now: clock.now,
+			})
+
+			stream.emit([meaningful()])
+			clock.advance(EPISODE_IDLE_MS)
+			timer.flush()
+			clock.advance(500)
+			stream.emit([influence('c', 'd', 0.1, 0.7)])
+			expect(companionPacing.get().dropped).toBe(1)
+
+			// A StrictMode remount must not inherit the last mount's rhythm.
+			dispose()
+
+			expect(companionPacing.get()).toEqual({ idleMs: EPISODE_IDLE_MS, dropped: 0 })
 		})
 	})
 })
