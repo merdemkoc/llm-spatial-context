@@ -1,20 +1,28 @@
 /**
- * The AI companion's two switches.
+ * The AI companion's two switches, and the rhythm it has settled into.
  *
  * Two independent controls, per MVP-2: **AI observation** gates whether the model is
  * consulted at all, **Voice** gates only speech. They apply to the whole canvas rather
  * than to a selection, which is why they live with the other view switches in
  * `ViewSettingsPopover` and not in the style panel.
  *
+ * Below them, a readout rather than a control: how long the canvas must now fall quiet
+ * before the companion starts thinking, and how many thoughts it has thrown away because
+ * the user came back first. The pause moves on its own, and a number that moves on its own
+ * and cannot be seen is indistinguishable from a bug — the same argument the event log and
+ * the canonical JSON panel make about derived spatial state. It is deliberately not
+ * adjustable: the point of the mechanism is that it works this out better than a slider.
+ *
  * Renders bare: the popover supplies the surface, the padding and the font.
  */
 import { useValue } from 'tldraw'
-import { observationEnabled, voiceEnabled } from '@/companion/companionState'
-import { switchRow, checkbox } from '@/canvas/ui/theme'
+import { companionPacing, observationEnabled, voiceEnabled } from '@/companion/companionState'
+import { switchRow, checkbox, caption } from '@/canvas/ui/theme'
 
 export function CompanionControls() {
 	const observing = useValue(observationEnabled)
 	const voicing = useValue(voiceEnabled)
+	const pacing = useValue(companionPacing)
 
 	return (
 		<>
@@ -36,6 +44,13 @@ export function CompanionControls() {
 				/>
 				Voice
 			</label>
+			{/* One decimal, because the pause moves in fractions of a second and rounding to
+			    whole ones would show it as stuck. The dropped count is omitted until there is
+			    one: a permanent "· 0 dropped" reads as a warning about nothing. */}
+			<div style={{ ...caption, paddingLeft: 'var(--tl-space-2)' }}>
+				Pause {(pacing.idleMs / 1000).toFixed(1)}s
+				{pacing.dropped > 0 && ` · ${pacing.dropped} dropped`}
+			</div>
 		</>
 	)
 }

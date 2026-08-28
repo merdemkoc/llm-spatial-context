@@ -285,4 +285,37 @@ describe('createEpisodeRecorder', () => {
 
 		expect(timer.hasPending).toBe(false)
 	})
+
+	it('hands back the events behind the summary, so a caller can carry them forward', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const onEpisode = vi.fn()
+		createEpisodeRecorder(stream, { onEpisode, schedule: timer.schedule })
+
+		stream.emit([moved('a')])
+		stream.emit([influence('a', 'b', 0.1, 0.5)])
+		timer.flush()
+
+		// Verbatim and unfolded: the fold is lossy by design, and a caller merging this
+		// episode into the next one needs what actually happened, not the summary of it.
+		expect(onEpisode.mock.calls[0][1]).toEqual([moved('a'), influence('a', 'b', 0.1, 0.5)])
+	})
+
+	it('re-reads a pause given as a getter, so a moving one governs the gesture in progress', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const onEpisode = vi.fn()
+		let pause = 1000
+		createEpisodeRecorder(stream, { onEpisode, schedule: timer.schedule, idleMs: () => pause })
+
+		stream.emit([influence('a', 'b', 0.1, 0.5)])
+		expect(timer.lastMs).toBe(1000)
+
+		// Raised between two events of one gesture — as an interruption penalty is. The
+		// next event must arm the longer pause, not wait for the next episode to adopt it.
+		pause = 2600
+		stream.emit([influence('a', 'b', 0.5, 0.6)])
+
+		expect(timer.lastMs).toBe(2600)
+	})
 })

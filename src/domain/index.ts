@@ -96,3 +96,12 @@ export {
 	isTrivialEpisode,
 	TRIVIAL_INFLUENCE_EPSILON,
 } from '@/domain/episode'
+
+export type { IdleBackoff, IdleBackoffOptions } from '@/domain/idleBackoff'
+
+export {
+	createIdleBackoff,
+	IDLE_BACKOFF_CAP_MS,
+	IDLE_BACKOFF_MARGIN_MS,
+	IDLE_BACKOFF_STEP_MS,
+} from '@/domain/idleBackoff'

@@ -498,31 +498,57 @@ Both remarks in that transcript are what the model actually said to the canvas u
 
 **The observer is handed meaning, not ids.** An episode names nodes by `NodeId` — a tldraw shape id — which is all the domain should carry and nothing a model can interpret. `readEpisodeContext` (in the adapter, because reading the canvas is a canvas concern) resolves those ids to the notes' own text, and adds every relation currently touching them, whether or not this episode created it. That second part is what makes "you pulled them apart but kept the connection" legible at all: the episode itself only reports that influence fell, and the arrow may have been drawn ten episodes ago.
 
-**Three behaviours in the orchestrator are worth naming**, all in `createCompanion`:
+**Four behaviours in the orchestrator are worth naming**, all in `createCompanion`:
 
 - **Two switches, two different jobs.** `observationEnabled` gates the model call; `voiceEnabled` gates only playback. Off/off is silent; on/off fills the transcript without speaking. The switch is re-read after the await, because a user who turns observation off mid-thought is asking not to be spoken to, and the answer in hand was authorised by a setting that no longer holds.
 - **At most one observation in flight.** A new episode aborts the previous request — the canvas has moved on, so its answer is about a state that no longer exists — and a generation counter makes a late response harmless even if the abort is ignored.
+- **A thought dies when the user comes back, and the pause it waited out learns from having been wrong.** See [the pause is a guess](#the-pause-is-a-guess) below; it is the one behaviour here that changes what the model is asked, not merely when.
 - **The text arrives with the voice.** Deciding what to say and synthesising it are two waits of a few seconds each. Announcing the remark after the first one meant the user read it, finished, and only then heard it read aloud — so the thinking hint stays up through synthesis, and the words are released as playback reports its progress (`spokenPrefix` in `reveal.ts`, position-weighted since an mp3 carries no word timings). The transcript is still written _before_ playback: it is the record of what the companion decided, so it must survive voice being off or synthesis failing.
 
 **Both API keys live in `server/`.** That is the whole reason this repo has a backend — two Hono routes, `/api/observe` and `/api/speak`, with the prompt and the model choice server-side so the persona can be tuned without shipping anything to the browser. Both routes **fail safe**: a malformed body, a missing key or a 400 from the SDK all degrade to `{ speak: false }` rather than an error at the user. The observer runs with thinking disabled, because `max_tokens` caps thinking plus text and a truncated response parses to nothing — which is indistinguishable from a considered silence.
 
 **The pause is real, and it is measured.** Against the live APIs, warm, re-measured 2026-08-28:
 
-| Stage                                     | Cost                      |
-| ----------------------------------------- | ------------------------- |
-| `EPISODE_IDLE_MS` before the episode ends | 1.2s                      |
-| `/api/observe` (`claude-sonnet-5`)        | 3.1s median (2.97 – 3.57) |
-| `/api/speak` (`gpt-4o-mini-tts`)          | 1.6s to first sound       |
+| Stage                                  | Cost                           |
+| -------------------------------------- | ------------------------------ |
+| The idle pause before the episode ends | 1.2s at rest, up to 4s (below) |
+| `/api/observe` (`claude-sonnet-5`)     | 3.1s median (2.97 – 3.57)      |
+| `/api/speak` (`gpt-4o-mini-tts`)       | 1.6s to first sound            |
 
 Summing those medians gives ~6.0s from "user stops dragging" to first sound, with the thinking hint covering the last ~4.7s. A live gesture measured end to end came in faster — 1.17s to the episode closing, a decision back at 3.19s — because the model call is the variable term and a simple episode is nearer 2s than 3s. Call it 5–6s, most of it the hint.
 
-**Almost all of the hint is the model call, so the hint is the hard part.** The idle pause is the only stage that was cheap to cut, and it sits _before_ the hint appears — so lowering it to 1.2s made the companion react sooner without shortening the wait the user actually watches. Inside the hint, three things were measured and two were rejected:
+**Almost all of the hint is the model call, so the hint is the hard part.** The idle pause is the only stage that was cheap to cut, and it sits _before_ the hint appears — so lowering it to 1.2s made the companion react sooner without shortening the wait the user actually watches. (It is also why cutting it was not the whole answer: a shorter pause starts the same 4.7s pipeline sooner, which is a separate problem from the pipeline being long enough for the canvas to change underneath it. See [the pause is a guess](#the-pause-is-a-guess).) Inside the hint, three things were measured and two were rejected:
 
 - **`OBSERVER_MODEL=claude-haiku-4-5` is still the one large lever** — about 2s faster, at a cost in judgement. Sonnet is kept deliberately.
 - **`output_config.effort` is not a lever, and the way that was established is the point.** Measured three times with improving method, the apparent win shrank each time: 0.66s with the levels timed one block after another, 0.44s once the levels were interleaved so API drift hit them equally, and **0.14s** once the sweep ran over three different episodes instead of one. `medium` is also bimodal (2.00 – 3.56s) where `low` is steady, which is how a lucky block ordering produced the first number. Left unset — at `high` the judgement is best and the latency is the same. A lever that keeps shrinking as the measurement improves was never there.
 - **Streaming the mp3 was built, measured, and reverted.** The route reaches its first byte at ~1.1s and its last at ~1.8s, so forwarding bytes as they arrive looks like a free second. It is not: Chrome buffers about 1.4s of a chunked clip before it produces sound, so the measured saving is only 0.27s (1.64s → 1.37s to first sound, A/B in one browser). Worse, a chunked mp3 reports `duration` as `Infinity` for the _whole_ clip, never just the opening — so the word reveal loses its only exact timebase and has to estimate, and the fit's ±11% error is ±0.66s of drift between a word appearing and being spoken. That is far coarser than the `timeupdate` the per-frame sampler was chosen over. 0.27s is not worth desyncing the thing the reveal exists to do.
 
 Prompt caching is not a lever either: the cacheable prefix is the system prompt alone at ~500 tokens, and `claude-sonnet-5` will not cache below 1024, so a `cache_control` marker would silently do nothing.
+
+#### The pause is a guess
+
+The table above has a consequence the latency work missed. If it takes ~4.7s to turn a closed episode into a spoken remark, then a remark is only ever about a canvas as it stood 4.7s ago — and the pause that decided when to start is a guess about one user's rhythm applied to every user. Guess short and a pause mid-arrangement is read as the end of a gesture: a thought starts, the user comes back, and the answer arrives describing something they have already moved past. Guess long and the companion says nothing worth hearing because it hears nothing.
+
+The original code made this worse than it needed to be. A stale request was aborted only when the _next_ episode closed, which is another full pause later — so a remark about an abandoned arrangement had a comfortable window in which to arrive, be recorded, and be spoken over the gesture in progress. Three changes, together:
+
+```mermaid
+flowchart TD
+    A["episode closes<br/>(canvas quiet for the pause)"] --> B["thought in flight<br/>observe → synthesise"]
+    B --> C{"user touches<br/>the board?"}
+    C -- "yes" --> D["abort the request<br/>drop the hint"]
+    D --> E["carry the events forward<br/>next episode is folded with them"]
+    E --> F["raise the pause past<br/>the quiet that fooled us"]
+    F --> A
+    C -- "no" --> G["remark lands<br/>transcript, then voice"]
+    G --> H["ease the pause<br/>halfway back"]
+    H --> A
+```
+
+- **A thought dies the moment the user returns**, not when the next episode closes. Measured in the browser, the hint drops **8ms** after the interrupting change — which also means the hint now reports something true, since a stranded "✦ Agent thinking…" over a canvas being actively rearranged was the visible half of this bug. Because `speak()` resolves at playback _start_, the same abort reaches synthesis and can never reach sound: a sentence already being spoken rides it out, because cutting one off mid-word every time the board is touched is worse than one that finishes late.
+- **The killed gesture is carried forward.** Its raw events are prepended to the next episode's and re-folded through the same `buildEpisodeSummary`, so what the observer eventually receives is exactly what it would have seen had the user never paused — the whole arc, not the fragment after the false ending. This is why the escalation below is safe: waiting longer costs nothing in coverage.
+- **The pause moves, and it moves on evidence.** A kill tells us precisely how much quiet was not enough — what the recorder waited out, plus how long the user stayed away after it fired. `createIdleBackoff` lands the next pause past that measured figure rather than groping toward it geometrically, with a step floor so a user who returns instantly still makes progress, and a 4s ceiling. A remark that lands hands half the penalty back. Live, interrupting four times in a row walked it 1.2 → 1.8 → 2.4 → 3.1 → 3.7s; going quiet once brought it to 2.4s.
+
+The ceiling is the load-bearing number. Total quiet needed for a remark to reach the user is the pause plus that 4.7s — 5.9s at rest, 8.7s at the cap — so a policy that escalated freely would escalate itself into permanent silence. It is shown, not hidden: the companion settings popover reads `Pause 2.4s · 4 dropped`, because a number that moves on its own and cannot be seen is indistinguishable from a bug. It is deliberately not adjustable; the point of the mechanism is that it works this out better than a slider would.
 
 **What did shrink was the remark.** Chasing the latency turned up a separate problem: "one or two short, conversational, observational sentences" was too loose an instruction, and remarks were averaging 168 characters — every one of them over 140 — with the longer ones narrating what the user had just done rather than what it might mean. Replacing that line with an explicit ceiling and three examples of the right register took the mean to **114 characters, none over 140**, with no example ever parroted back. Since the voice speaks at roughly 16 characters a second, that is about three and a half seconds less talking per remark, which does more for how long the companion _feels_ than any of the levers above. Examples beat prohibitions here: the earlier attempt to get brevity by lowering `effort` made remarks **longer**, because it bought its speed by loosening adherence to exactly this paragraph.
 
@@ -714,7 +740,9 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 - **A text edit reaches neither the stream nor the observer** — the same limitation as the event vocabulary above, but worth stating twice, because it means the companion is blind to the one change that alters what an idea _means_.
 - **The companion needs two API keys and is otherwise silent.** With no `.env` the routes fail safe and return `{ speak: false }`, which is indistinguishable at the UI from a model that had nothing to say. Everything else in the app is unaffected.
 - **The transcript is in memory and capped** at `TRANSCRIPT_LIMIT` (50); a reload starts empty, for the same reason the event log does. Anti-repetition sees only the last `DEFAULT_HISTORY_SIZE` (3) remarks, so the companion can repeat itself across a long session.
-- **`EPISODE_IDLE_MS` and `TRIVIAL_INFLUENCE_EPSILON` are uncalibrated**, like `INTENT_WEIGHT` and the proximity bands. 1.2s is a guess at how long a pause means "done", and 0.05 at what counts as a nudge; both were set to feel right in use rather than measured against a task. The idle pause was 2s until it was cut for latency — it is dead time before the companion even starts thinking — so if the companion now speaks up mid-arrangement, this is the constant to raise. Two named constants in `src/domain/episode.ts`.
+- **`TRIVIAL_INFLUENCE_EPSILON` is uncalibrated**, like `INTENT_WEIGHT` and the proximity bands: 0.05 is a guess at what counts as a nudge, set to feel right in use rather than measured against a task. `EPISODE_IDLE_MS` used to be the same kind of guess and is now only the [resting value](#the-pause-is-a-guess) of one that corrects itself — but the four constants governing that correction (step, margin, ceiling, and the halving on success) are themselves uncalibrated, and only the ceiling has an argument behind it.
+- **The pause adapts to interruption, not to a person.** It resets to `EPISODE_IDLE_MS` on every mount, so nothing is learned across sessions, and it is driven by a single signal — was a thought killed — rather than by the distribution of the user's actual pauses. A user whose rhythm is consistently slower re-earns the same penalty at the start of every session.
+- **An open arc keeps accumulating until it is worth a remark.** Carried events are cleared only when an episode is actually _sent_, so an arc interrupted repeatedly, or one whose merged episode keeps netting out below the significance gate, grows until something meaningful happens — bounded only by the `EPISODE_BUFFER_LIMIT` slice, which costs the arc its earliest `before` when it bites.
 - **A drag that never pauses never becomes an episode.** The recorder finalizes on idle, so continuous manipulation defers the observation indefinitely — `EPISODE_BUFFER_LIMIT` (2000 events) is a backstop against unbounded growth, and hitting it costs the episode its earliest `before`.
 
 ## Testing
