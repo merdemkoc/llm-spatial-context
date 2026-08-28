@@ -51,6 +51,32 @@ describe('renderSuggestRequest', () => {
 		expect(proactive).toContain('unprompted')
 		expect(demand).not.toContain('unprompted')
 	})
+
+	it("states the user's grouping intent when given", () => {
+		const rendered = renderSuggestRequest({
+			board,
+			trigger: 'demand',
+			recentComments: [],
+			intent: 'group by user-journey stage',
+		})
+		expect(rendered).toContain('user-journey stage')
+	})
+
+	it('gives the model each note in full, not truncated', () => {
+		const longText =
+			'onboarding is where new teams either reach their first win or quietly churn away'
+		const longBoard = { ...board, nodes: [{ id: 'a', text: longText, hasField: true }, ...board.nodes.slice(1)] }
+		const rendered = renderSuggestRequest({ board: longBoard, trigger: 'demand', recentComments: [] })
+		expect(rendered).toContain(longText)
+	})
+
+	it('states which ideas are notably close, so it understands the placement', () => {
+		const rendered = renderSuggestRequest({ board, trigger: 'demand', recentComments: [] })
+		// proximities carries a↔b; both must surface in a closeness line.
+		expect(rendered.toLowerCase()).toContain('close')
+		expect(rendered).toContain('"onboarding"')
+		expect(rendered).toContain('"activation email"')
+	})
 })
 
 describe('interpretGrouping', () => {

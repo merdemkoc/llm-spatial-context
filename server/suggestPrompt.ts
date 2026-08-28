@@ -59,6 +59,8 @@ export interface SuggestPayload {
 	board?: BoardSummaryPayload
 	trigger?: 'demand' | 'proactive'
 	recentComments?: string[]
+	/** The user's grouping intent from the on-demand prompt (e.g. "by user-journey stage"). */
+	intent?: string
 }
 
 /** The suggester's verdict, after validation. */
@@ -71,13 +73,17 @@ export interface GroupingSuggestion {
 /** Decline. The one safe answer whenever a response can't be trusted. */
 export const NO_GROUPING: GroupingSuggestion = { suggest: false, members: [], comment: '' }
 
-/** Name an idea by its text, keeping the id available for the model to echo. */
+/**
+ * Name an idea by its full text, keeping the id available for the model to echo.
+ *
+ * The whole content, untruncated: a grouping is only as good as its grasp of what each note
+ * actually says, so it reads them in full rather than a preview.
+ */
 function named(id: string | undefined, labels: Record<string, string>): string {
 	if (!id) return 'an idea'
 	const text = labels[id]
 	if (!text) return `an untitled idea (${id})`
-	const short = text.length > 60 ? `${text.slice(0, 57)}...` : text
-	return `"${short}"`
+	return `"${text}"`
 }
 
 /** Render the suggest request as the user message: the whole board, ids and all. */
@@ -127,15 +133,31 @@ export function renderSuggestRequest(payload: SuggestPayload): string {
 		lines.push('')
 	}
 
+	// Placement, as closeness: which ideas the user has physically drawn near one another. It
+	// is part of what a grouping reads — two apart-but-related ideas are the candidates.
+	const proximities = board.proximities ?? []
+	if (proximities.length > 0) {
+		const pairs = proximities.map((pair) => `${named(pair.source, labels)} & ${named(pair.target, labels)}`)
+		lines.push(`Notably close on the board: ${pairs.join('; ')}.`)
+		lines.push('')
+	}
+
 	if ((payload.recentComments ?? []).length > 0) {
 		lines.push('You recently said — do not simply repeat these:')
 		for (const comment of payload.recentComments!) lines.push(`- "${comment}"`)
 		lines.push('')
 	}
 
-	lines.push(
-		'Propose at most one grouping: a set of two or more ideas that clearly belong together — related by meaning or by an explicit relation — but are currently scattered rather than already close. Return their exact ids in "members" and one short sentence in "comment" naming what unites them.'
-	)
+	const intent = payload.intent?.trim()
+	if (intent) {
+		lines.push(
+			`The user asked to group the ideas by: "${intent}". Propose the grouping that best fits that intent — the set of two or more ideas it draws together — reading each note's full content above. Return their exact ids in "members" and one short sentence in "comment" naming what unites them under that intent.`
+		)
+	} else {
+		lines.push(
+			'Propose at most one grouping: a set of two or more ideas that clearly belong together — related by meaning or by an explicit relation — but are currently scattered rather than already close. Return their exact ids in "members" and one short sentence in "comment" naming what unites them.'
+		)
+	}
 	if (payload.trigger === 'proactive') {
 		lines.push(
 			'This is unprompted, so only propose if the case is strong; otherwise return suggest=false.'

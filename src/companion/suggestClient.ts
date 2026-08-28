@@ -25,6 +25,8 @@ export interface SuggestRequest {
 	/** `demand` is the button; `proactive` is the companion offering unprompted (a higher bar). */
 	trigger: 'demand' | 'proactive'
 	recentComments: string[]
+	/** The user's grouping intent from the on-demand prompt. Absent for proactive grouping. */
+	intent?: string
 }
 
 export interface SuggestClient {
