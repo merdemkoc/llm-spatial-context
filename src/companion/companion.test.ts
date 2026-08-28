@@ -12,17 +12,20 @@ import {
 	EPISODE_IDLE_MS,
 	IDLE_BACKOFF_CAP_MS,
 	IDLE_BACKOFF_MARGIN_MS,
+	type BoardSummary,
 	type Schedule,
 	type SpatialEvent,
 } from '@/domain'
 import { createCompanion } from '@/companion/companion'
 import type { ObserveRequest, ObserverClient, ObserverDecision } from '@/companion/observerClient'
+import type { GroupingProposal, SuggestClient, SuggestRequest } from '@/companion/suggestClient'
 import type { VoiceClient } from '@/companion/voiceClient'
 import {
 	companionPacing,
 	companionStage,
 	companionTranscript,
 	companionUtterance,
+	groupingSuggestion,
 	observationEnabled,
 	voiceEnabled,
 } from '@/companion/companionState'
@@ -165,6 +168,42 @@ function brokenVoice() {
 	}
 }
 
+/** A suggester whose proposals resolve on the test's command, like the fake observer. */
+function fakeSuggester() {
+	const calls: {
+		request: SuggestRequest
+		signal?: AbortSignal
+		resolve: (proposal: GroupingProposal) => void
+	}[] = []
+	const client: SuggestClient = {
+		suggest(request, signal) {
+			return new Promise<GroupingProposal>((resolve) => {
+				calls.push({ request, signal, resolve })
+			})
+		},
+	}
+	return { client, calls }
+}
+
+/** A board with three lone ideas — enough to warrant a proactive grouping. */
+const scatteredBoard: BoardSummary = {
+	nodeCount: 3,
+	nodes: [
+		{ id: 'a', text: 'one', hasField: false },
+		{ id: 'b', text: 'two', hasField: false },
+		{ id: 'c', text: 'three', hasField: false },
+	],
+	clusters: [],
+	loners: ['a', 'b', 'c'],
+	proximities: [],
+	relations: [],
+	effectiveStrengths: [],
+	truncated: false,
+}
+
+/** A plan builder that just lines the members up — enough for the loop tests. */
+const linePlan = (ids: string[]) => ({ members: ids, targets: ids.map((id, i) => ({ id, x: i * 10, y: 0 })) })
+
 /** Let all pending microtasks (awaited promises) settle. */
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
@@ -175,6 +214,7 @@ beforeEach(() => {
 	companionTranscript.set([])
 	companionUtterance.set(null)
 	companionPacing.set({ idleMs: EPISODE_IDLE_MS, dropped: 0 })
+	groupingSuggestion.set(null)
 })
 
 describe('createCompanion', () => {
@@ -368,7 +408,7 @@ describe('createCompanion', () => {
 		const timer = controllableSchedule()
 		const { observer, calls } = fakeObserver()
 		const voiceFake = fakeVoice()
-		const dispose = createCompanion({
+		const companion = createCompanion({
 			stream,
 			observer,
 			voice: voiceFake.voice,
@@ -377,7 +417,7 @@ describe('createCompanion', () => {
 
 		stream.emit([meaningful()])
 		timer.flush()
-		dispose()
+		companion.dispose()
 		// An answer that arrives after teardown must not reach a companion that is gone.
 		calls[0].resolve({ speak: true, comment: 'nobody is listening' })
 		await tick()
@@ -407,6 +447,32 @@ describe('createCompanion', () => {
 		expect(calls[0].request.recentComments).toEqual(['three', 'four'])
 	})
 
+	it('hands the observer the whole-board summary for context', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer, calls } = fakeObserver()
+		const { voice } = fakeVoice()
+		const board: BoardSummary = {
+			nodeCount: 2,
+			nodes: [
+				{ id: 'a', text: 'pricing', hasField: false },
+				{ id: 'b', text: 'onboarding', hasField: false },
+			],
+			clusters: [{ members: ['a', 'b'] }],
+			loners: [],
+			proximities: [{ source: 'a', target: 'b', influence: 0.8 }],
+			relations: [],
+			effectiveStrengths: [],
+			truncated: false,
+		}
+		createCompanion({ stream, observer, voice, schedule: timer.schedule, board: () => board })
+
+		stream.emit([meaningful()])
+		timer.flush()
+
+		expect(calls[0].request.board).toEqual(board)
+	})
+
 	it('tells the observer what the ids mean', () => {
 		const stream = createEventStream()
 		const timer = controllableSchedule()
@@ -428,6 +494,181 @@ describe('createCompanion', () => {
 
 		expect(calls[0].request.context.labels).toEqual({ a: 'pricing', b: 'onboarding' })
 		expect(calls[0].request.context.relations).toHaveLength(1)
+	})
+
+	describe('grouping suggestions', () => {
+		it('proposes a grouping when the observer stays silent and the board warrants it', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice, spoken } = fakeVoice()
+			const suggester = fakeSuggester()
+			createCompanion({
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+				board: () => scatteredBoard,
+				suggest: suggester.client,
+				planGrouping: linePlan,
+				shouldProposeGrouping: () => true,
+			})
+
+			stream.emit([meaningful()])
+			timer.flush()
+			// The observer has nothing to say — the moment a grouping can step in.
+			calls[0].resolve({ speak: false, comment: null })
+			await tick()
+
+			expect(suggester.calls).toHaveLength(1)
+			expect(suggester.calls[0].request.trigger).toBe('proactive')
+
+			suggester.calls[0].resolve({ members: ['a', 'b'], rationale: 'These two belong together.' })
+			await tick()
+
+			expect(groupingSuggestion.get()?.members).toEqual(['a', 'b'])
+			expect(spoken).toEqual(['These two belong together.'])
+			expect(companionTranscript.get().map((e) => e.comment)).toEqual([
+				'These two belong together.',
+			])
+		})
+
+		it('does not propose proactively when the observer spoke', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice } = fakeVoice()
+			const suggester = fakeSuggester()
+			createCompanion({
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+				board: () => scatteredBoard,
+				suggest: suggester.client,
+				planGrouping: linePlan,
+				shouldProposeGrouping: () => true,
+			})
+
+			stream.emit([meaningful()])
+			timer.flush()
+			calls[0].resolve({ speak: true, comment: 'A remark about the change.' })
+			await tick()
+
+			expect(suggester.calls).toHaveLength(0)
+		})
+
+		it('does not consult the observer while a grouping suggestion is pending', () => {
+			groupingSuggestion.set({ generation: 1, members: ['a', 'b'], targets: [], rationale: 'x' })
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice } = fakeVoice()
+			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+
+			stream.emit([meaningful()])
+			timer.flush()
+
+			expect(calls).toHaveLength(0)
+		})
+
+		it('proposes a grouping on demand, regardless of the proactive gates', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer } = fakeObserver()
+			const { voice, spoken } = fakeVoice()
+			const suggester = fakeSuggester()
+			const companion = createCompanion({
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+				board: () => scatteredBoard,
+				suggest: suggester.client,
+				planGrouping: linePlan,
+				// The cooldown never elapses — on demand must ignore it.
+				shouldProposeGrouping: () => false,
+			})
+
+			companion.requestGrouping()
+
+			expect(suggester.calls).toHaveLength(1)
+			expect(suggester.calls[0].request.trigger).toBe('demand')
+
+			suggester.calls[0].resolve({ members: ['a', 'c'], rationale: 'On request.' })
+			await tick()
+
+			expect(groupingSuggestion.get()?.members).toEqual(['a', 'c'])
+			expect(spoken).toEqual(['On request.'])
+		})
+
+		it('stays idle when the suggester declines', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer } = fakeObserver()
+			const { voice, spoken } = fakeVoice()
+			const suggester = fakeSuggester()
+			const companion = createCompanion({
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+				board: () => scatteredBoard,
+				suggest: suggester.client,
+				planGrouping: linePlan,
+			})
+
+			companion.requestGrouping()
+			suggester.calls[0].resolve({ members: [], rationale: '' })
+			await tick()
+
+			expect(groupingSuggestion.get()).toBeNull()
+			expect(spoken).toEqual([])
+			expect(companionStage.get()).toBe('idle')
+		})
+
+		it('affirms an accepted grouping and does not narrate its own move', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice, spoken } = fakeVoice()
+			let applied = 0
+			const companion = createCompanion({
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+				board: () => scatteredBoard,
+				applyGrouping: (plan) => {
+					applied = plan.targets.length
+					return applied
+				},
+			})
+
+			groupingSuggestion.set({
+				generation: 9,
+				members: ['a', 'b', 'c'],
+				targets: [
+					{ id: 'a', x: 0, y: 0 },
+					{ id: 'b', x: 10, y: 0 },
+					{ id: 'c', x: 20, y: 0 },
+				],
+				rationale: 'These three belong together.',
+			})
+
+			companion.acceptGrouping()
+			await tick()
+
+			expect(applied).toBe(3)
+			expect(groupingSuggestion.get()).toBeNull()
+			expect(spoken).toEqual(['There — those three sit together now.'])
+
+			// The repositioning finalizes as an episode moments later; it must be swallowed
+			// rather than narrated or re-grouped.
+			stream.emit([meaningful()])
+			timer.flush()
+			expect(calls).toHaveLength(0)
+		})
 	})
 
 	describe('saying it and showing it together', () => {

@@ -14,6 +14,7 @@
  */
 import { atom } from 'tldraw'
 import { EPISODE_IDLE_MS } from '@/domain'
+import type { ClusterPlacement, NodeId } from '@/domain'
 
 /** Whether finalized episodes are sent to the model. Off means the companion is asleep. */
 export const observationEnabled = atom('companion observation enabled', true)
@@ -81,3 +82,36 @@ export interface Utterance {
  * ahead of it. Not persisted, not canonical; `spokenPrefix` in `reveal.ts` does the mapping.
  */
 export const companionUtterance = atom<Utterance | null>('companion utterance', null)
+
+/**
+ * A grouping the companion is proposing right now — the ghost preview on the canvas,
+ * awaiting accept or dismiss. `null` between proposals.
+ *
+ * Module-scope for the same reason as the others: the ghost overlay (an `OnTheCanvas`
+ * renderer), the accept/dismiss controls and the orchestrator are siblings with no shared
+ * React parent. Not persisted, not canonical — a transient proposal about the canvas, not a
+ * fact about it. `targets` are world top-lefts, the same frame as `spatial.x/y`.
+ */
+export interface GroupingSuggestion {
+	/** The orchestrator generation that produced it, so a stale ghost can be told apart. */
+	generation: number
+	members: NodeId[]
+	targets: ClusterPlacement[]
+	/** The one-line remark the companion spoke when proposing it; captions the ghost. */
+	rationale: string
+}
+
+export const groupingSuggestion = atom<GroupingSuggestion | null>(
+	'companion grouping suggestion',
+	null
+)
+
+/**
+ * Imperative handles the running companion publishes for the module-scope UI to reach across
+ * the same provider-less gap the atoms bridge: the "✦ Suggest a grouping" button calls
+ * `requestGrouping`, the accept control calls `acceptGrouping`. `null` while no companion is
+ * mounted, which is also the controls' disabled state. (Dismiss needs no handle — it just
+ * clears `groupingSuggestion`, since it changes nothing on the canvas.)
+ */
+export const requestGrouping = atom<(() => void) | null>('companion request grouping', null)
+export const acceptGrouping = atom<(() => void) | null>('companion accept grouping', null)

@@ -16,13 +16,21 @@
  * Renders bare: the popover supplies the surface, the padding and the font.
  */
 import { useValue } from 'tldraw'
-import { companionPacing, observationEnabled, voiceEnabled } from '@/companion/companionState'
-import { switchRow, checkbox, caption } from '@/canvas/ui/theme'
+import {
+	companionPacing,
+	groupingSuggestion,
+	observationEnabled,
+	requestGrouping,
+	voiceEnabled,
+} from '@/companion/companionState'
+import { switchRow, checkbox, caption, panelButton } from '@/canvas/ui/theme'
 
 export function CompanionControls() {
 	const observing = useValue(observationEnabled)
 	const voicing = useValue(voiceEnabled)
 	const pacing = useValue(companionPacing)
+	const request = useValue(requestGrouping)
+	const pending = useValue(groupingSuggestion)
 
 	return (
 		<>
@@ -51,6 +59,17 @@ export function CompanionControls() {
 				Pause {(pacing.idleMs / 1000).toFixed(1)}s
 				{pacing.dropped > 0 && ` · ${pacing.dropped} dropped`}
 			</div>
+			{/* On-demand grouping. Disabled when the companion is asleep, when nothing is mounted to
+			    ask, or when a proposal is already on the canvas waiting to be decided — mirroring the
+			    orchestrator's own guards, so the button can't request something the loop would drop. */}
+			<button
+				type="button"
+				style={panelButton}
+				disabled={!request || !observing || pending !== null}
+				onClick={() => request?.()}
+			>
+				✦ Suggest a grouping
+			</button>
 		</>
 	)
 }

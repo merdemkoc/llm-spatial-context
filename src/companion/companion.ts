@@ -57,18 +57,23 @@ import {
 	EPISODE_BUFFER_LIMIT,
 	EPISODE_IDLE_MS,
 	isTrivialEpisode,
+	type BoardSummary,
+	type ClusterPlacement,
 	type EpisodeSummary,
+	type NodeId,
 	type Schedule,
 	type SpatialEvent,
 	type SpatialEventStream,
 } from '@/domain'
 import type { EpisodeContext, ObserverClient } from '@/companion/observerClient'
+import type { GroupingProposal, SuggestClient } from '@/companion/suggestClient'
 import type { VoiceClient } from '@/companion/voiceClient'
 import {
 	companionPacing,
 	companionStage,
 	companionTranscript,
 	companionUtterance,
+	groupingSuggestion,
 	observationEnabled,
 	voiceEnabled,
 } from '@/companion/companionState'
@@ -78,6 +83,31 @@ export const DEFAULT_HISTORY_SIZE = 3
 
 /** Cap on retained transcript entries, so a long session doesn't grow unbounded. */
 export const TRANSCRIPT_LIMIT = 50
+
+/**
+ * How long to wait between unprompted grouping proposals. A proactive suggestion is more
+ * assertive than a remark — it puts a ghost on the canvas — so it must be rare. The
+ * on-demand button bypasses this entirely.
+ */
+export const PROACTIVE_COOLDOWN_MS = 60_000
+
+/** Small slack added to the self-edit window so scheduling jitter can't leak the move through. */
+const AGENT_EDIT_GRACE_MS = 250
+
+/** The smallest counts spelled out, so the affirmation reads as a sentence rather than a figure. */
+const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten']
+
+/** The one line the companion says when a grouping is accepted. Deterministic — no model call. */
+export function groupingAffirmation(count: number): string {
+	const word = count < NUMBER_WORDS.length ? NUMBER_WORDS[count] : String(count)
+	return `There — those ${word} sit together now.`
+}
+
+/** A concrete grouping: the members to move and where. Mirrors the adapter's `GroupingPlan`. */
+export interface CompanionGroupingPlan {
+	members: NodeId[]
+	targets: ClusterPlacement[]
+}
 
 export interface CompanionOptions {
 	stream: SpatialEventStream
@@ -104,6 +134,43 @@ export interface CompanionOptions {
 	 * means reading the canvas, which the domain must not do — the adapter supplies it.
 	 */
 	context?: (summary: EpisodeSummary) => EpisodeContext
+	/**
+	 * The whole board as background for the observer's remark, and the input the suggester
+	 * reasons over. Injected for the same reason as `context`: it reads the canvas, so the
+	 * adapter supplies it. Whole-board, not episode-specific, so it takes no argument.
+	 */
+	board?: () => BoardSummary
+	/**
+	 * The grouping suggester. Optional: without it the companion only observes. Consulted
+	 * on demand, and proactively after a silent observation when the board warrants it.
+	 */
+	suggest?: SuggestClient
+	/**
+	 * Turn the model's chosen member ids into a concrete plan (targets computed from the live
+	 * layout). Injected like `context`, because the geometry reads the canvas. Returns `null`
+	 * when fewer than two members survive.
+	 */
+	planGrouping?: (memberIds: NodeId[]) => CompanionGroupingPlan | null
+	/**
+	 * Commit an accepted grouping — reposition the members — and report how many moved.
+	 * Injected because the write reaches the canvas; the companion owns only the affirmation
+	 * and the suppression of its own follow-up episode.
+	 */
+	applyGrouping?: (plan: CompanionGroupingPlan) => number
+	/**
+	 * Whether a proactive grouping is due this episode. Injected so tests are deterministic;
+	 * the default is a cooldown so the companion doesn't nag.
+	 */
+	shouldProposeGrouping?: (summary: EpisodeSummary, now: number) => boolean
+}
+
+/** The running companion. `dispose` tears it down; the rest are the grouping controls' handles. */
+export interface Companion {
+	dispose: () => void
+	/** Ask for a grouping now — the "✦ Suggest a grouping" button. */
+	requestGrouping: () => void
+	/** Commit the pending grouping, affirm it, and swallow the resulting self-edit episode. */
+	acceptGrouping: () => void
 }
 
 const EMPTY_CONTEXT: EpisodeContext = { labels: {}, relations: [] }
@@ -140,12 +207,27 @@ export function createCompanion({
 	now = Date.now,
 	historySize = DEFAULT_HISTORY_SIZE,
 	context,
-}: CompanionOptions): () => void {
+	board,
+	suggest,
+	planGrouping,
+	applyGrouping,
+	shouldProposeGrouping,
+}: CompanionOptions): Companion {
 	let pending: PendingThought | null = null
-	// Bumped per episode, and again whenever a thought is killed. A response whose
-	// generation is stale is ignored even if the observer ignored the abort signal.
+	let inFlight: AbortController | null = null
+	// Bumped per episode and per suggestion, and again whenever a thought is killed. A
+	// response whose generation is stale (its episode or request was superseded) is ignored
+	// even if the client ignored the abort.
 	let generation = 0
 	let disposed = false
+	// When set to a future time, episodes finalizing before it are the companion's own
+	// grouping move and are skipped rather than narrated.
+	let agentEditUntil = 0
+	// When the last proactive proposal was made, for the cooldown between them.
+	let lastProactiveAt = 0
+
+	const shouldPropose =
+		shouldProposeGrouping ?? ((_summary, at) => at - lastProactiveAt >= PROACTIVE_COOLDOWN_MS)
 
 	/** A killed thought's events, waiting to be folded into the next episode. */
 	let carried: SpatialEvent[] = []
@@ -224,6 +306,103 @@ export function createCompanion({
 		companionTranscript.set(next.slice(-TRANSCRIPT_LIMIT))
 	}
 
+	/**
+	 * The shared second half of both an observation and a grouping: a sentence exists, now
+	 * render a voice for it and release the words as playback reports them. Owns the stage and
+	 * the utterance for its generation only, so a newer thought taking over is never overwritten.
+	 */
+	const speakComment = async (comment: string, mine: number) => {
+		const owns = () => mine === generation && !disposed
+		if (!voiceEnabled.get()) {
+			// Nothing to wait for, so the remark is the whole remark, immediately.
+			companionStage.set('idle')
+			return
+		}
+
+		companionStage.set('composing')
+		try {
+			await voice.speak(comment, {
+				onStart: () => {
+					if (!owns()) return
+					// The hint comes down exactly as the voice comes up: one hands over to the
+					// other, so there is never a silent sentence sitting on screen.
+					companionStage.set('idle')
+					companionUtterance.set({ comment, fraction: 0 })
+				},
+				onProgress: (fraction) => {
+					if (!owns()) return
+					// Done speaking: drop the utterance so the bar falls back to the transcript's
+					// newest entry, which is this same sentence in full.
+					if (fraction >= 1) companionUtterance.set(null)
+					else companionUtterance.set({ comment, fraction })
+				},
+			})
+		} catch {
+			// A blocked or failed playback shouldn't take down the loop — but it must not leave
+			// the remark hidden behind a thinking hint that will never clear either.
+			if (owns()) {
+				companionStage.set('idle')
+				companionUtterance.set(null)
+			}
+		}
+	}
+
+	/**
+	 * Ask the suggester for a grouping and, if one comes back, put its ghost on the canvas and
+	 * speak the rationale. Shares the generation/in-flight discipline with observation, so a
+	 * newer episode aborts it and a stale answer is dropped.
+	 */
+	const runSuggestion = async (
+		trigger: 'demand' | 'proactive',
+		boardSummary: BoardSummary | undefined
+	) => {
+		if (!suggest || !planGrouping || !boardSummary) return
+
+		generation += 1
+		const mine = generation
+		inFlight?.abort()
+		const controller = new AbortController()
+		inFlight = controller
+		companionStage.set('observing')
+		companionUtterance.set(null)
+		// Count the cooldown from the attempt, not just a success, so repeated declines on a
+		// quiet canvas can't hammer the API.
+		if (trigger === 'proactive') lastProactiveAt = now()
+
+		let proposal: GroupingProposal | null = null
+		try {
+			proposal = await suggest.suggest(
+				{ board: boardSummary, trigger, recentComments: recentComments() },
+				controller.signal
+			)
+		} catch {
+			// Aborted by a newer episode, or the request failed — either way, no proposal.
+		}
+
+		if (mine !== generation || disposed) return
+		inFlight = null
+
+		const plan =
+			proposal && proposal.members.length >= 2 && proposal.rationale
+				? planGrouping(proposal.members)
+				: null
+		if (!plan) {
+			companionStage.set('idle')
+			return
+		}
+
+		// The ghost first, so the preview is on screen as the rationale is spoken; then the
+		// transcript, then the voice — the same order and reasons as an observation.
+		groupingSuggestion.set({
+			generation: mine,
+			members: plan.members,
+			targets: plan.targets,
+			rationale: proposal!.rationale,
+		})
+		record(proposal!.rationale)
+		await speakComment(proposal!.rationale, mine)
+	}
+
 	const handleEpisode = async (summary: EpisodeSummary, events: SpatialEvent[]) => {
 		if (!observationEnabled.get() || isTrivialEpisode(summary)) {
 			// Nothing is sent, so nothing is spent. A lone trivial episode is noise and is
@@ -234,6 +413,12 @@ export function createCompanion({
 			if (carried.length > 0) carried = events
 			return
 		}
+		// The companion's own grouping move finalizes as an episode moments after an accept.
+		// Skip it: it has already affirmed the grouping, and narrating or re-grouping its own
+		// action would loop.
+		if (now() < agentEditUntil) return
+		// A proposal is on the canvas awaiting a decision — never talk over a pending ghost.
+		if (groupingSuggestion.get()) return
 
 		generation += 1
 		const mine = generation
@@ -259,6 +444,10 @@ export function createCompanion({
 		if (companionUtterance.get() !== null) voice.stop()
 		companionUtterance.set(null)
 
+		// Built once and shared: the observer reads it as context, and a proactive suggestion
+		// reuses it rather than reading the canvas twice.
+		const boardSummary = board?.()
+
 		let decision = null as Awaited<ReturnType<ObserverClient['observe']>> | null
 		try {
 			decision = await observer.observe(
@@ -266,6 +455,7 @@ export function createCompanion({
 					episode: summary,
 					context: context?.(summary) ?? EMPTY_CONTEXT,
 					recentComments: recentComments(),
+					board: boardSummary,
 				},
 				controller.signal
 			)
@@ -285,7 +475,25 @@ export function createCompanion({
 		// who switches observation off mid-thought is asking not to be spoken to, and the
 		// answer in hand was authorised by a setting that no longer holds.
 		if (silent || !observationEnabled.get()) {
+			// The thought reached its end — silence is a first-class outcome — so the pause it
+			// waited out was long enough and the policy hands back half its penalty.
 			settle()
+			// The observer had nothing to say. This is the one moment a proactive grouping
+			// fits: silence, plus a board with a few scattered ideas, plus the cooldown
+			// elapsed. It never stacks on top of a remark, and the model's own high bar
+			// declines most of the time regardless.
+			if (
+				silent &&
+				observationEnabled.get() &&
+				suggest &&
+				planGrouping &&
+				boardSummary &&
+				boardSummary.nodeCount >= 3 &&
+				boardSummary.loners.length >= 2 &&
+				shouldPropose(summary, now())
+			) {
+				await runSuggestion('proactive', boardSummary)
+			}
 			return
 		}
 
@@ -294,53 +502,41 @@ export function createCompanion({
 		// Record before speaking so the transcript fills even with voice off, and so a
 		// playback failure can't lose the observation.
 		record(comment)
+		await speakComment(comment, mine)
+	}
 
-		if (!voiceEnabled.get()) {
-			// Nothing to wait for, so the remark is the whole remark, immediately.
-			settle()
-			return
-		}
+	/** Ask for a grouping now. Bypasses the proactive gates — the user asked. */
+	const requestGrouping = () => {
+		if (disposed) return
+		// A proposal is already on the canvas; deciding it comes first.
+		if (groupingSuggestion.get()) return
+		// Respect the master switch: an asleep companion doesn't reach into the canvas.
+		if (!observationEnabled.get()) return
+		void runSuggestion('demand', board?.())
+	}
 
-		/** Ours only until a newer episode takes over, or the companion is torn down. */
-		const owns = () => mine === generation && !disposed
+	/** Commit the pending grouping, affirm it once, and swallow the resulting self-edit episode. */
+	const acceptGrouping = () => {
+		if (disposed) return
+		const suggestion = groupingSuggestion.get()
+		if (!suggestion) return
 
-		// The second half of the wait, and a different job: the sentence exists, and now a
-		// voice for it is being rendered. Saying so is the difference between a hint that
-		// looks stuck and one that reports progress.
-		companionStage.set('composing')
+		// Clear the ghost before the move, so the follow-up episode sees no pending proposal
+		// and is caught by the self-edit window below instead.
+		groupingSuggestion.set(null)
+		const moved = applyGrouping?.({ members: suggestion.members, targets: suggestion.targets }) ?? 0
+		// Whatever moved, our edit finalizes as an episode about `idleMs` from now; skip it.
+		agentEditUntil = now() + (idleMs ?? EPISODE_IDLE_MS) + AGENT_EDIT_GRACE_MS
+		if (moved <= 0) return
 
-		try {
-			await voice.speak(comment, {
-				// What carries a kill through to the TTS request. It can only ever reach
-				// synthesis: `speak` resolves at playback start, so by the time there is sound
-				// there is no `pending` left to abort.
-				signal: controller.signal,
-				onStart: () => {
-					if (!owns()) return
-					// The hint comes down exactly as the voice comes up: one hands over to
-					// the other, so there is never a silent sentence sitting on screen. This is
-					// also the moment the remark has reached the user, so the pause that
-					// produced it is vindicated and the sentence stops being killable.
-					settle()
-					companionUtterance.set({ comment, fraction: 0 })
-				},
-				onProgress: (fraction) => {
-					if (!owns()) return
-					// Done speaking: drop the utterance so the bar falls back to the
-					// transcript's newest entry, which is this same sentence in full.
-					if (fraction >= 1) companionUtterance.set(null)
-					else companionUtterance.set({ comment, fraction })
-				},
-			})
-		} catch {
-			// A blocked or failed playback shouldn't take down the loop — but it must not
-			// leave the remark hidden behind a thinking hint that will never clear either.
-			// `owns()` is false when the throw *was* the kill, which has cleaned up already.
-			if (owns()) {
-				settle()
-				companionUtterance.set(null)
-			}
-		}
+		// Affirm once, built from what we already know — no model call, so no wait and no loop.
+		generation += 1
+		const mine = generation
+		inFlight?.abort()
+		inFlight = null
+		const affirmation = groupingAffirmation(moved)
+		record(affirmation)
+		void speakComment(affirmation, mine)
 	}
 
 	// Subscribed before the recorder, deliberately. Both listen to the same stream and are
@@ -367,7 +563,7 @@ export function createCompanion({
 		idleMs: nextIdleMs,
 	})
 
-	return () => {
+	const dispose = () => {
 		disposed = true
 		unsubscribeActivity()
 		disposeRecorder()
@@ -382,5 +578,9 @@ export function createCompanion({
 		// The rhythm belonged to this mount's user and this mount's canvas. A StrictMode
 		// remount starts from the resting pause, like a fresh session.
 		companionPacing.set({ idleMs: idleMs ?? EPISODE_IDLE_MS, dropped: 0 })
+		// A pending ghost belongs to the canvas that is going away.
+		groupingSuggestion.set(null)
 	}
+
+	return { dispose, requestGrouping, acceptGrouping }
 }

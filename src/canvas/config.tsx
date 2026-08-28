@@ -19,7 +19,8 @@ import { POST_IT_SHAPE_TYPE } from '@/canvas/shapes/postItShape'
 import { PostItStylePanel } from '@/canvas/ui/PostItStylePanel'
 import { InspectorDock } from '@/canvas/ui/InspectorDock'
 import { CompanionBar } from '@/canvas/ui/CompanionBar'
-import { ContextualFieldOverlay } from '@/canvas/ui/ContextualFieldOverlay'
+import { CanvasOverlays } from '@/canvas/ui/CanvasOverlays'
+import { GroupingControls } from '@/canvas/ui/GroupingControls'
 
 export const customShapeUtils = [PostItShapeUtil]
 
@@ -131,11 +132,19 @@ export const components: TLComponents = {
 	),
 
 	/**
-	 * Inside the camera-transformed layer and behind the shapes, so field circles
-	 * pan and zoom with the canvas and never cover a note's text. Also outside the
-	 * export path, which is what keeps them off the grounded screenshot.
+	 * Inside the camera-transformed layer and behind the shapes, so the field circles and
+	 * the grouping ghost pan and zoom with the canvas and never cover a note's text. Also
+	 * outside the export path, which is what keeps them off the grounded screenshot. Both
+	 * overlays share this single slot through `CanvasOverlays`.
 	 */
-	OnTheCanvas: ContextualFieldOverlay,
+	OnTheCanvas: CanvasOverlays,
+
+	/**
+	 * Screen space, above the shapes: the accept/dismiss control for a pending grouping. It
+	 * must take pointer events, which the `OnTheCanvas` layer deliberately does not, so it
+	 * lives here rather than with the ghost it belongs to.
+	 */
+	InFrontOfTheCanvas: GroupingControls,
 
 	/**
 	 * One Canvas is one page. Hiding the page menu keeps that true rather than
