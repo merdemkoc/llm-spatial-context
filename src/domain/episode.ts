@@ -21,8 +21,16 @@ import type { PairSnapshot, SpatialEvent } from '@/domain/events'
 import type { NodeId } from '@/domain/node'
 import type { SpatialEventStream } from '@/domain/eventStream'
 
-/** How long the canvas must be quiet before the current episode is considered finished. */
-export const EPISODE_IDLE_MS = 2000
+/**
+ * How long the canvas must be quiet before the current episode is considered finished.
+ *
+ * This is dead time the user waits through before the companion has even started
+ * thinking, so it is the cheapest second in the whole budget to buy back. The cost of
+ * lowering it is a pause mid-arrangement being read as the end of an episode, which
+ * means more episodes and so more chances to speak; `isTrivialEpisode` and the prompt's
+ * silence-by-default are what keep that from becoming chatter. This is the dial if it does.
+ */
+export const EPISODE_IDLE_MS = 1200
 
 /**
  * The influence shift below which a pair's change is treated as noise by the local gate.

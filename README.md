@@ -492,7 +492,7 @@ flowchart LR
 
 Both remarks in that transcript are what the model actually said to the canvas underneath them. It reads newest first, so the one on top came second — an arrow drawn to a note on the far side of the canvas, which is the case the [separation of signals](#relational-gravity) exists for: proximity says those two are unrelated, and the user has just said otherwise. The one below it came first, when three notes drifted into one another's fields.
 
-**An episode is the unit, not an event.** A drag emits a `node_moved` and an `influence_changed` per node per store tick, so handing the model raw events would be handing it hundreds of near-identical records. `createEpisodeRecorder` buffers the stream and finalizes after `EPISODE_IDLE_MS` (2s) of quiet; `buildEpisodeSummary` then folds the buffer to net change — per directed pair, the first sighting fixes `before` and the last advances `after`, keeping every distinct transition it passed through. A `node_moved` folds the same way, origin to destination. Both are pure functions in `src/domain/episode.ts`, testable without a clock or a network.
+**An episode is the unit, not an event.** A drag emits a `node_moved` and an `influence_changed` per node per store tick, so handing the model raw events would be handing it hundreds of near-identical records. `createEpisodeRecorder` buffers the stream and finalizes after `EPISODE_IDLE_MS` (1.2s) of quiet; `buildEpisodeSummary` then folds the buffer to net change — per directed pair, the first sighting fixes `before` and the last advances `after`, keeping every distinct transition it passed through. A `node_moved` folds the same way, origin to destination. Both are pure functions in `src/domain/episode.ts`, testable without a clock or a network.
 
 **Significance is decided twice, by two different kinds of judge.** The local gate (`isTrivialEpisode`) is cheap and deliberately dumb: any structural change other than a bare move is always interesting, and failing that an episode is trivial when every pair's net influence shift stays under `TRIVIAL_INFLUENCE_EPSILON` (0.05). It exists only to keep genuine noise off the wire. Everything that survives is worth _asking_ about — and the model then decides whether it is worth _speaking_ about. **Silence is a first-class answer**, returned as structured output (`{ speak, comment }`) rather than detected in prose, and it is the normal outcome for most episodes.
 
@@ -506,15 +506,25 @@ Both remarks in that transcript are what the model actually said to the canvas u
 
 **Both API keys live in `server/`.** That is the whole reason this repo has a backend — two Hono routes, `/api/observe` and `/api/speak`, with the prompt and the model choice server-side so the persona can be tuned without shipping anything to the browser. Both routes **fail safe**: a malformed body, a missing key or a 400 from the SDK all degrade to `{ speak: false }` rather than an error at the user. The observer runs with thinking disabled, because `max_tokens` caps thinking plus text and a truncated response parses to nothing — which is indistinguishable from a considered silence.
 
-**The pause is real, and it is measured.** Against the live APIs, warm:
+**The pause is real, and it is measured.** Against the live APIs, warm, re-measured 2026-08-28:
 
-| Stage                                     | Cost       |
-| ----------------------------------------- | ---------- |
-| `EPISODE_IDLE_MS` before the episode ends | 2.0s       |
-| `/api/observe` (`claude-sonnet-5`)        | 2.6 – 3.0s |
-| `/api/speak` (`gpt-4o-mini-tts`)          | ~1.8s      |
+| Stage                                     | Cost                      |
+| ----------------------------------------- | ------------------------- |
+| `EPISODE_IDLE_MS` before the episode ends | 1.2s                      |
+| `/api/observe` (`claude-sonnet-5`)        | 3.1s median (2.97 – 3.57) |
+| `/api/speak` (`gpt-4o-mini-tts`)          | 1.6s to first sound       |
 
-Roughly 6.6s from "user stops dragging" to first sound, and the thinking hint covers the last ~4.6s of it. The one large lever is `OBSERVER_MODEL=claude-haiku-4-5`, which is about 2s faster at some cost in judgement; the TTS model is not the bottleneck and swapping it does not help.
+Summing those medians gives ~6.0s from "user stops dragging" to first sound, with the thinking hint covering the last ~4.7s. A live gesture measured end to end came in faster — 1.17s to the episode closing, a decision back at 3.19s — because the model call is the variable term and a simple episode is nearer 2s than 3s. Call it 5–6s, most of it the hint.
+
+**Almost all of the hint is the model call, so the hint is the hard part.** The idle pause is the only stage that was cheap to cut, and it sits _before_ the hint appears — so lowering it to 1.2s made the companion react sooner without shortening the wait the user actually watches. Inside the hint, three things were measured and two were rejected:
+
+- **`OBSERVER_MODEL=claude-haiku-4-5` is still the one large lever** — about 2s faster, at a cost in judgement. Sonnet is kept deliberately.
+- **`output_config.effort` is not a lever, and the way that was established is the point.** Measured three times with improving method, the apparent win shrank each time: 0.66s with the levels timed one block after another, 0.44s once the levels were interleaved so API drift hit them equally, and **0.14s** once the sweep ran over three different episodes instead of one. `medium` is also bimodal (2.00 – 3.56s) where `low` is steady, which is how a lucky block ordering produced the first number. Left unset — at `high` the judgement is best and the latency is the same. A lever that keeps shrinking as the measurement improves was never there.
+- **Streaming the mp3 was built, measured, and reverted.** The route reaches its first byte at ~1.1s and its last at ~1.8s, so forwarding bytes as they arrive looks like a free second. It is not: Chrome buffers about 1.4s of a chunked clip before it produces sound, so the measured saving is only 0.27s (1.64s → 1.37s to first sound, A/B in one browser). Worse, a chunked mp3 reports `duration` as `Infinity` for the _whole_ clip, never just the opening — so the word reveal loses its only exact timebase and has to estimate, and the fit's ±11% error is ±0.66s of drift between a word appearing and being spoken. That is far coarser than the `timeupdate` the per-frame sampler was chosen over. 0.27s is not worth desyncing the thing the reveal exists to do.
+
+Prompt caching is not a lever either: the cacheable prefix is the system prompt alone at ~500 tokens, and `claude-sonnet-5` will not cache below 1024, so a `cache_control` marker would silently do nothing.
+
+**What did shrink was the remark.** Chasing the latency turned up a separate problem: "one or two short, conversational, observational sentences" was too loose an instruction, and remarks were averaging 168 characters — every one of them over 140 — with the longer ones narrating what the user had just done rather than what it might mean. Replacing that line with an explicit ceiling and three examples of the right register took the mean to **114 characters, none over 140**, with no example ever parroted back. Since the voice speaks at roughly 16 characters a second, that is about three and a half seconds less talking per remark, which does more for how long the companion _feels_ than any of the levers above. Examples beat prohibitions here: the earlier attempt to get brevity by lowering `effort` made remarks **longer**, because it bought its speed by loosening adherence to exactly this paragraph.
 
 ### Grounded screenshot
 
@@ -704,7 +714,7 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 - **A text edit reaches neither the stream nor the observer** — the same limitation as the event vocabulary above, but worth stating twice, because it means the companion is blind to the one change that alters what an idea _means_.
 - **The companion needs two API keys and is otherwise silent.** With no `.env` the routes fail safe and return `{ speak: false }`, which is indistinguishable at the UI from a model that had nothing to say. Everything else in the app is unaffected.
 - **The transcript is in memory and capped** at `TRANSCRIPT_LIMIT` (50); a reload starts empty, for the same reason the event log does. Anti-repetition sees only the last `DEFAULT_HISTORY_SIZE` (3) remarks, so the companion can repeat itself across a long session.
-- **`EPISODE_IDLE_MS` and `TRIVIAL_INFLUENCE_EPSILON` are uncalibrated**, like `INTENT_WEIGHT` and the proximity bands. 2s is a guess at how long a pause means "done", and 0.05 at what counts as a nudge; both were set to feel right in use rather than measured against a task. Two named constants in `src/domain/episode.ts`.
+- **`EPISODE_IDLE_MS` and `TRIVIAL_INFLUENCE_EPSILON` are uncalibrated**, like `INTENT_WEIGHT` and the proximity bands. 1.2s is a guess at how long a pause means "done", and 0.05 at what counts as a nudge; both were set to feel right in use rather than measured against a task. The idle pause was 2s until it was cut for latency — it is dead time before the companion even starts thinking — so if the companion now speaks up mid-arrangement, this is the constant to raise. Two named constants in `src/domain/episode.ts`.
 - **A drag that never pauses never becomes an episode.** The recorder finalizes on idle, so continuous manipulation defers the observation indefinitely — `EPISODE_BUFFER_LIMIT` (2000 events) is a backstop against unbounded growth, and hitting it costs the episode its earliest `before`.
 
 ## Testing
