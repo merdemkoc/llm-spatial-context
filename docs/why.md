@@ -423,20 +423,26 @@ flowchart TB
     change --> reasoning["The observer's<br/>interpretation"]
     reasoning --> spoken["A spoken remark"]
     spoken --> thinking
-    reasoning -.-> extend["AI writes into<br/>the representation"]
-    extend -.-> thinking
+    reasoning --> extend["AI writes into<br/>the representation<br/><i>(proposed, not automatic)</i>"]
+    extend --> thinking
 
     classDef built fill:#eef7ee,stroke:#5a5,color:#243;
-    classDef speculative fill:#f7f7f7,stroke:#aaa,color:#666;
-    class thinking,interaction,canvas,rep,change,reasoning,spoken built;
-    class extend speculative;
+    class thinking,interaction,canvas,rep,change,reasoning,spoken,extend built;
 ```
 
-Green is what runs today. The loop does close — but it closes **through the human**. The AI can
-observe the representation and speak about it; it cannot yet reach into it. Adding an idea, drawing
-a relation, proposing a grouping — the grey arrow — is the obvious next step and none of it exists.
+Green is what runs today, and now that includes the grey arrow. Observation still only speaks —
+watching the representation and interpreting it stops at a sentence, by design, and always will.
+But grouping-by-intent and whole-board reflection reach further: propose which notes belong
+together, or read the board through a chosen lens and propose new notes and arrows to add. Each
+shows its proposal as a ghost first, and nothing lands until the human accepts it — one item, or
+all of them. The loop still closes through the human on every edit; it just no longer requires the
+human to have thought of the edit first.
 
-An observer in that position could notice more than it currently does:
+The five things below were written as what "an observer in that position" could notice, before any
+of this existed. One of them is now a persona by name — `gap-finder` reflects on exactly "an
+unexplored gap between two conceptual clusters." The rest still describe an observer that notices
+and proposes on its own, mid-gesture, with no button pressed — which is still the gap: reflection
+runs only on request, or under a cooldown after a silence the board's shape earns.
 
 - two semantically related ideas that have become spatially separated,
 - a cluster forming around a concept,
@@ -444,22 +450,19 @@ An observer in that position could notice more than it currently does:
 - an unexplored gap between two conceptual clusters,
 - a new pattern emerging from how the user is manipulating the canvas.
 
-It could then add information, create entities, propose relations, or generate new representations
-directly into the space.
-
 ---
 
 ## What isn't built
 
 Being specific about this is most of the value of a note like this one.
 
-| Missing                    | What it would take                                                                                               |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **Image nodes**            | A second `NodeType` with its own shape util and tool. The Node abstraction was built for it; nothing uses it yet |
-| **Attention**              | Selection and focus entering `CanvasDocument` and the episode, rather than only driving the overlay              |
-| **Semantic change events** | A `content_changed` event — the first non-spatial one, which is why it hasn't been added lightly                 |
-| **AI write-back**          | The grey arrow above. The companion can speak about the representation; it cannot modify it                      |
-| **A relation vocabulary**  | `explains`, `supports`, `contradicts` as known types, rather than whatever word the user typed                   |
+| Missing                    | What it would take                                                                                                                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Image nodes**            | A second `NodeType` with its own shape util and tool. The Node abstraction was built for it; nothing uses it yet                                                                   |
+| **Attention**              | Selection and focus entering `CanvasDocument` and the episode, rather than only driving the overlay                                                                                |
+| **Semantic change events** | A `content_changed` event — the first non-spatial one, which is why it hasn't been added lightly                                                                                   |
+| **Unprompted write-back**  | The observer proposing an edit off its own back. Reflection and grouping only run on request, or after a cooldown-gated silence — never as a third option beside speak/stay-silent |
+| **A relation vocabulary**  | `explains`, `supports`, `contradicts` as known types, rather than whatever word the user typed                                                                                     |
 
 Nothing about the current prototype answers the hypothesis. It is a system that works well enough to
 let me think about it.

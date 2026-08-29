@@ -128,6 +128,7 @@ The rest of the UI follows the same rule — earn permanent space or be one clic
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Top centre          | The **companion's** latest sentence, released word by word as the voice says it — and while it works, a hint naming the job it is on. Click it for the full transcript. | The only part of this UI that speaks unprompted, so the only one always visible. tldraw leaves this zone empty.                                                                |
 | Top right           | **⋯** → the four switches (contextual fields, AI observation, voice, follow) · **`</>` Canonical JSON** → the [Inspector](#four-layers-of-context)                      | tldraw stacks this zone above the style panel in one column, so anything permanent here pushes the style panel down the screen. Two buttons, and the panels hang beneath them. |
+| Toolbar, right end  | **✦ Suggest a grouping** · **✦ Reflect on board** → the [companion's on-demand actions](#suggesting-and-reflecting)                                                     | The companion's own actions, so they sit with the tools rather than in a settings menu.                                                                                        |
 | Right, on selection | Field radius, [relational gravity](#relational-gravity), post-it colours                                                                                                | Selection-scoped, so it belongs in tldraw's own style panel.                                                                                                                   |
 | Bottom left         | Zoom                                                                                                                                                                    | tldraw's.                                                                                                                                                                      |
 
@@ -137,21 +138,22 @@ Chrome is built from tldraw's own tokens (`--tl-color-*`, `--tl-space-*`, `--tl-
 
 ## Scripts
 
-| Script                 | Does                                                        |
-| ---------------------- | ----------------------------------------------------------- |
-| `npm run dev`          | Both of the next two, together, with prefixed output        |
-| `npm run dev:web`      | Vite dev server with HMR (`--host`, also on the LAN)        |
-| `npm run dev:api`      | The companion's server on `PORT` (8787), watched by `tsx`   |
-| `npm run build`        | Typecheck client + server, then production build to `dist/` |
-| `npm run preview`      | Serve the production build locally                          |
-| `npm start`            | Run the server against a built `dist/` — one process        |
-| `npm run typecheck`    | `tsc --noEmit`, for both tsconfigs                          |
-| `npm test`             | Vitest, single run                                          |
-| `npm run test:watch`   | Vitest in watch mode                                        |
-| `npm run lint`         | ESLint over the repo                                        |
-| `npm run lint:fix`     | ESLint with autofix                                         |
-| `npm run format`       | Prettier write                                              |
-| `npm run format:check` | Prettier check (no writes)                                  |
+| Script                 | Does                                                                                                                  |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`          | Both of the next two, together, with prefixed output                                                                  |
+| `npm run dev:web`      | Vite dev server with HMR (`--host`, also on the LAN)                                                                  |
+| `npm run dev:api`      | The companion's server on `PORT` (8787), watched by `tsx`                                                             |
+| `npm run build`        | Typecheck client + server, then production build to `dist/`                                                           |
+| `npm run preview`      | Serve the production build locally                                                                                    |
+| `npm start`            | Run the server against a built `dist/` — one process                                                                  |
+| `npm run typecheck`    | `tsc --noEmit`, for both tsconfigs                                                                                    |
+| `npm test`             | Vitest, single run                                                                                                    |
+| `npm run test:watch`   | Vitest in watch mode                                                                                                  |
+| `npm run lint`         | ESLint over the repo                                                                                                  |
+| `npm run lint:fix`     | ESLint with autofix                                                                                                   |
+| `npm run format`       | Prettier write                                                                                                        |
+| `npm run format:check` | Prettier check (no writes)                                                                                            |
+| `npm run eval`         | Runs the observer against fixtures, live — [see below](#the-ai-companion). Calls a paid API; never part of `npm test` |
 
 ## Architecture
 
@@ -566,6 +568,20 @@ The ceiling is still the load-bearing number. Total quiet needed for a remark to
 
 **What did shrink was the remark.** Chasing the latency turned up a separate problem: "one or two short, conversational, observational sentences" was too loose an instruction, and remarks were averaging 168 characters — every one of them over 140 — with the longer ones narrating what the user had just done rather than what it might mean. Replacing that line with an explicit ceiling and three examples of the right register took the mean to **114 characters, none over 140**, with no example ever parroted back. Since the voice speaks at roughly 16 characters a second, that is about three and a half seconds less talking per remark, which does more for how long the companion _feels_ than any of the levers above. Examples beat prohibitions here: the earlier attempt to get brevity by lowering `effort` made remarks **longer**, because it bought its speed by loosening adherence to exactly this paragraph.
 
+#### Suggesting and reflecting
+
+Two more agents sit beside the observer, and neither watches — both are asked. `/api/suggest` takes the whole board and a stated intent and proposes which existing notes belong together; `/api/reflect` takes the whole board and a chosen lens and proposes a reading, plus notes and arrows to add. **✦ Suggest a grouping** and **✦ Reflect on board** sit beside the four tools for exactly this — the companion's own actions, not a settings menu.
+
+![The two AI action buttons beside the toolbar: a pending idea and relation proposed by a reflection, each with accept and dismiss controls](docs/images/agent-write-back.png)
+
+Grouping asks first: four preset intents (by theme, by feature area, by priority, by user-journey stage) plus a freeform field. Reflection asks which lens — **critique**, **analyzer**, **gap-finder**, **synthesizer** — so the same board reads differently for what is weak, what its structure is, what is missing, or what it is becoming. Either can also fire **proactively**: after an observation comes back silent, a grouping is offered unprompted if the board has at least 3 nodes and at least 2 "loners," no more often than once every `PROACTIVE_COOLDOWN_MS` (60s) — a higher bar than the button, which asks whenever clicked. Both buttons disable the moment a proposal is already on the canvas awaiting a decision; only one is ever open.
+
+**The model picks, the client places.** A language model is poor at coordinates, so neither agent ever proposes one. Grouping returns which node ids belong together and a one-sentence rationale; `computeClusterLayout` (`src/domain/clusterLayout.ts`) then packs them into a tidy grid around their shared centre and slides the whole rigid block clear of everything else, deterministically, from the members' own geometry. Reflection returns note text, not a position; `planIdeaNotes` places each proposal in open space beside the board the same way.
+
+**Nothing lands until it's accepted.** Every proposal previews as a ghost first: a pending grouping highlights each member where it sits now and a faint dashed outline where it would land; a pending idea is a faint agent-tinted card at its planned spot; a pending relation is a dashed agent-tinted arrow. Accept and dismiss controls float beside them — one item at a time, or all at once. Accepting a grouping only repositions existing notes, so it speaks the same language as a user dragging them by hand; accepting an idea creates a real post-it stamped `createdBy: 'agent'`, visibly heavier-bordered in the agent's own ink; accepting a relation draws a real arrow, grey and dashed, so an agent-drawn connection is never mistaken for one the user drew. Each is one undo step.
+
+That write path is adapter code the companion calls, not canvas state it holds. `Canvas.tsx` hands the orchestrator the same kind of injected functions it already used to _read_ the canvas (`readEpisodeContext`, `readBoardSummary`) — `applyGrouping`, `createAgentNotes`, `createAgentRelations` — and the companion publishes commit handles onto its own atoms for the UI to call. The observer itself never touches any of this: it can decide to speak or stay silent, and nothing else.
+
 ### Grounded screenshot
 
 The other three layers speak in canvas coordinates — they say where a Node is and what reaches it. What none of them can say is which _pixels_ it occupies. A model handed a screenshot and the JSON has to work that out from world coordinates, and inferring it is exactly the kind of guess the rest of this design removes.
@@ -665,12 +681,20 @@ src/
     events.ts                  deriveEvents — a diff restated as ordered events
     eventStream.ts             In-process subscribable buffer; the app-wide singleton
     episode.ts                 Events folded into one gesture + the local significance gate
+    idleBackoff.ts              How long the idle pause should be — raised past a false ending, eased back on success
+    understandingDrift.ts      How far the board has drifted from the standing understanding — the free local gate
+    boardSummary.ts             The whole board, folded for a model — clusters, proximity pairs, effective-strength pairs
+    clusterLayout.ts            Where a grouping's members go — packed into a grid, slid clear of everything else
+    ideaPlacement.ts            Top-left positions for new notes, in a column beside the existing board
     index.ts                   Barrel — the @/domain import surface
   companion/                   The AI observer's loop — the event stream's one consumer
     companion.ts               episode → gate → observe → queue → speak
     thoughtQueue.ts            Where a thought goes, whether it is still worth saying, its label
     companionState.ts          Module atoms: the switches, the stage, the transcript, the queue
     observerClient.ts          The seam to the model — POST an episode, get a decision
+    suggestClient.ts           The seam to the suggester — POST the board + intent, get a grouping
+    reflectClient.ts           The seam to the reflection — POST the board + persona, get a reading + proposals
+    digestClient.ts            The seam to the digest — POST the board, get the standing understanding
     voiceClient.ts             The seam to TTS — POST text, play audio, report progress and the end
     reveal.ts                  Which words have been said at a given fraction of playback
   canvas/
@@ -680,7 +704,7 @@ src/
       adapter.ts               shapeToNode / nodeToShape — the round-trip pair
       ids.ts                   NodeId ⇄ TLShapeId
       richText.ts              plain text ⇄ rich text, kept pure
-      relations.ts             arrow ⇄ Relation, gravity reads/writes, rebuilding on import
+      relations.ts             arrow ⇄ Relation, gravity reads/writes, rebuilding on import, createAgentRelations
       relationGeometry.ts      Measures an arrow's drawn path in world space; never throws
       canvasView.ts            getCanvasDocument(editor), useCanvasDocument()
       metadata.ts              createdAt / updatedAt side effects
@@ -688,6 +712,9 @@ src/
       spatialEvents.ts         Drives diffCanvas from live edits — the one subscription
       episodeContext.ts        An episode's ids → note text + the relations that exist
       episodeValidity.ts       The live board in the terms one episode described it in
+      boardContext.ts          readBoardSummary(editor) — the whole board, for the suggester + reflection
+      ideas.ts                 planIdeaNotes ghosts a reflection's proposed notes; createAgentNotes commits them
+      grouping.ts              planGrouping resolves a suggestion's members; applyGrouping moves them, on accept
     dev/
       seedScenario.ts          The walkthrough scene, behind window.seedDemoScene()
     shapes/                    The tldraw projection of a post_it
@@ -696,6 +723,7 @@ src/
       PostItShapeUtil.tsx      Rendering, geometry, resize, text editing
       PostItTool.ts            Creates the Node first, then projects it
       RelationTool.ts          Subclasses ArrowShapeTool; tags what it draws
+      postItAppearance.ts      An agent-authored note's border — heavier, in the agent's own ink
     grounding/                 Node ⇄ pixels, for the grounded screenshot
       visualId.ts              assignVisualIds — N1/N2/N3 in reading order
       projection.ts            World ⇄ image: bounds, rotated corners, bbox, measured scale
@@ -709,11 +737,20 @@ src/
       EventLogPanel.tsx        Live view of the spatial event stream, newest first
       CompanionBar.tsx         The top-centre chip: latest sentence, thinking, transcript
       CompanionQueue.tsx       The backlog behind the bar, one dismissable chip per gesture
+      CompanionFocusOverlay.tsx   The spotlight — a soft region and a ring on the notes a remark is about
       CompanionFocusCamera.tsx Follows the spotlight with the camera; renders nothing
       CompanionTranscriptPanel.tsx  Everything the companion has said this session
       CompanionControls.tsx    The AI observation and Voice switches
       AgentThinkingIndicator.tsx  The hint naming the job the companion is on
       ViewSettingsPopover.tsx  The ⋯ button's four switches
+      CanvasAiActions.tsx      ✦ Suggest a grouping · ✦ Reflect on board — the companion's own actions
+      CanvasControls.tsx       Composes GroupingControls + IdeaControls into tldraw's one pointer-enabled slot
+      GroupingControls.tsx     Accept/dismiss a pending grouping, floating above the proposed cluster
+      IdeaControls.tsx         Accept/dismiss a reflection's proposed notes and arrows, one at a time or all
+      CanvasOverlays.tsx       Composes every OnTheCanvas layer — fields, ghosts, the focus spotlight — into one
+      GroupingGhostOverlay.tsx A pending grouping, previewed: members highlighted, faint targets, a line between
+      IdeaGhostOverlay.tsx     A reflection's proposed notes, previewed as faint agent-tinted cards
+      RelationGhostOverlay.tsx A reflection's proposed arrows, previewed as dashed agent-tinted lines
       PostItStylePanel.tsx     Colour controls, and hosts the field and gravity controls
       ContextualFieldControl.tsx  Radius input for the selection
       RelationGravityControl.tsx  Gravity input for the selected relations
@@ -739,7 +776,7 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 - **Change detection over time** → `diffCanvas(before, after)` in `src/domain/canvasDiff.ts`. Capture documents with `getCanvasDocument(editor)`; it reads the derived layers rather than recomputing them, so it can't disagree with the JSON you already have. For changes as they happen, subscribe to the [event stream](#event-stream) instead of holding your own snapshots.
 - **A new event type** → add it to the `SpatialEvent` union in `src/domain/events.ts` and emit it from `deriveEvents`, which is pure and takes a `CanvasDiff`. If the transition isn't visible in a diff, the gap is in `canvasDiff.ts`, not here — add the change kind or pair delta first, so the event stays a restatement of something a reader could already see in the JSON. Give it a line in `describeEvent` in `src/canvas/ui/EventLogPanel.tsx`; the switch is exhaustive, so TypeScript will fail the build until you do.
 - **Something that watches the canvas** (an agent, a logger, an experiment) → `spatialEventStream.subscribe(fn)` from `@/domain`. Don't add a second store subscription: `registerSpatialEvents` is deliberately the only one, so every consumer sees the same ordered events.
-- **What the companion says, or how it judges** → `SYSTEM_PROMPT` and `renderEpisode` in `server/prompt.ts`. Both are server-side so the persona can change without touching the client, and `renderEpisode` is unit-tested from the browser side (`src/companion/renderEpisode.test.ts`) because what the model is _told_ is as much a decision as what it is asked. A different model is `OBSERVER_MODEL` in `.env`; a different voice is `TTS_VOICE`.
+- **What the companion says, or how it judges** → `SYSTEM_PROMPT` and `renderEpisode` in `server/prompt.ts`. Both are server-side so the persona can change without touching the client, and `renderEpisode` is unit-tested from the browser side (`src/companion/renderEpisode.test.ts`) because what the model is _told_ is as much a decision as what it is asked. A different model is `OBSERVER_MODEL` in `.env` (`SUGGESTER_MODEL`, `REFLECT_MODEL` and `DIGEST_MODEL` are the same knob for the other three agents, each falling back to `OBSERVER_MODEL` then a default if unset); a different voice is `TTS_VOICE`; `OBSERVER_EFFORT` overrides `output_config.effort` for probing reasoning-effort trade-offs, though [it isn't a lever worth pulling](#the-ai-companion).
 - **More of the representation reaching the observer** (attention, a text edit, a new node type) → the gap is upstream of the companion. Add the change kind to `canvasDiff.ts`, the event to `events.ts`, then carry it through `buildEpisodeSummary` and `describeStructural`. Don't special-case it in the companion: an episode should stay a restatement of things a reader could already see in the JSON.
 
 ## Known limitations
@@ -767,7 +804,7 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 - **The proximity thresholds are uncalibrated**, exactly like `INTENT_WEIGHT`. `STRONG_PROXIMITY = 0.66` and `WEAK_PROXIMITY = 0.33` split a continuous influence into bands so `proximity_changed` has something to report; nothing consumes the bands yet, so there is no task to tune them against. Two named constants in one file.
 - **There is one node type.** `NodeType` is `'post_it'` and nothing else, so every idea on this canvas is words. Image, article and agent nodes are what the abstraction was built for — `NodeContent` keeps `text` generic at the Node level precisely so a source URL can sit beside it — and none of them exist. See [Where to add things](#where-to-add-things).
 - **Attention is not part of the representation.** Selection drives the field highlight and the [influence badges](#influence-scores), and stops there: it is in no `CanvasDocument`, emits no event, and never reaches the observer. So the companion can see that you moved something and not what you are looking at, which is a large share of what a person is actually doing.
-- **The companion cannot write back.** It observes the representation and speaks about it; adding a node, drawing a relation or proposing a grouping is not wired, so the loop closes through the user rather than through the canvas.
+- **Observation itself cannot write back.** The loop that watches and speaks unprompted only ever speaks — [grouping-by-intent and reflection](#suggesting-and-reflecting) are the paths that reach the canvas, and both run on request or under a cooldown, never as a third thing the observer can decide to do instead of staying silent.
 - **A text edit reaches neither the stream nor the observer** — the same limitation as the event vocabulary above, but worth stating twice, because it means the companion is blind to the one change that alters what an idea _means_.
 - **The companion needs two API keys and is otherwise silent.** With no `.env` the routes fail safe and return `{ speak: false }`, which is indistinguishable at the UI from a model that had nothing to say. Everything else in the app is unaffected.
 - **The transcript is in memory and capped** at `TRANSCRIPT_LIMIT` (50); a reload starts empty, for the same reason the event log does. Anti-repetition sees only the last `DEFAULT_HISTORY_SIZE` (3) remarks, so the companion can repeat itself across a long session.
@@ -782,11 +819,11 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 
 `npm test` runs three layers, because the first one alone turned out not to be enough — two bugs shipped that were invisible to pure tests (a meta write the record validator rejected, and a control whose commit was destroyed by the selection change that triggered it).
 
-| Layer              | Files                                                                                                                                                                                                                                                                   | Environment                |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff,events,eventStream,episode}.test.ts`, `companion/{renderEpisode,reveal,thoughtQueue}.test.ts`, `adapter/{adapter,relations}.test.ts`, `grounding/{visualId,projection,grounding,annotationLayer}.test.ts` | `node` — no DOM, no editor |
-| Real editor        | `adapter/{editor,relationEditor,spatialEvents,episodeValidity}.test.ts`, `dev/seedScenario.test.ts`, `grounding/groundedExport.test.ts`, `companion/{companion,voiceClient}.test.ts`                                                                                    | `jsdom`                    |
-| Rendered component | `ui/*.test.tsx`                                                                                                                                                                                                                                                         | `jsdom`                    |
+| Layer              | Files                                                                                                                                                                                                                                                                                                                                                                                                                                               | Environment                |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff,events,eventStream,episode,idleBackoff,understandingDrift,boardSummary,clusterLayout,ideaPlacement}.test.ts`, `companion/{renderEpisode,renderSuggest,renderReflect,renderDigest,reveal,thoughtQueue,digestClient}.test.ts`, `adapter/{adapter,relations}.test.ts`, `grounding/{visualId,projection,grounding,annotationLayer,arrowAware}.test.ts`, `shapes/postItAppearance.test.ts` | `node` — no DOM, no editor |
+| Real editor        | `adapter/{editor,relationEditor,spatialEvents,episodeValidity,grouping,ideas}.test.ts`, `dev/seedScenario.test.ts`, `grounding/groundedExport.test.ts`, `companion/{companion,voiceClient}.test.ts`                                                                                                                                                                                                                                                 | `jsdom`                    |
+| Rendered component | `ui/*.test.tsx`                                                                                                                                                                                                                                                                                                                                                                                                                                     | `jsdom`                    |
 
 The companion needs no network, no clock and no audio device to be tested: `createCompanion` takes an `ObserverClient`, a `VoiceClient` and a `Schedule`, so every branch of the loop — silence, voice off, observation off, interruption, anti-repetition, the text/voice handover — is driven through fakes. `renderEpisode` is tested from the client side even though it lives in `server/` (imported by relative path, since Vite's `@` alias doesn't cover it), because what the model is _told_ is as much a decision as what it is asked: a payload rendered as opaque shape ids still produces a fluent remark, just a meaningless one. The five routes themselves have no tests — what is left of them after the prompt is the SDK.
 
