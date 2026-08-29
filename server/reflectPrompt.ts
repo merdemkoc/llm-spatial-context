@@ -19,9 +19,10 @@ import {
 	renderBoardBlocks,
 	renderRecentComments,
 } from './prompting/boardRender.ts'
-import { CANVAS_PRIMER } from './prompting/fragments.ts'
+import { CANVAS_PRIMER, UNDERSTANDING_TRIAGE } from './prompting/fragments.ts'
 import { isCleanRemark } from './prompting/remark.ts'
-import type { BoardSummaryPayload } from './prompting/types.ts'
+import { renderUnderstanding } from './prompting/understanding.ts'
+import type { BoardSummaryPayload, BoardUnderstanding } from './prompting/types.ts'
 
 /** Most new ideas a single reflection may propose. */
 export const MAX_IDEAS = 5
@@ -81,6 +82,10 @@ export interface ReflectPayload {
 	 * which let the same persona asked twice return the same reading word for word.
 	 */
 	recentComments?: string[]
+	/** The companion's standing reading of this board. Absent until the first digest runs. */
+	understanding?: BoardUnderstanding
+	/** How much the board has drifted since that reading was taken. */
+	driftSince?: number
 }
 
 /** One lens the reflection can take on: how it reads the board, and whether it proposes notes. */
@@ -224,6 +229,8 @@ Do two things. First, read the board as a whole and say what it is about — the
 
 Second, propose a few new notes that would move the thinking forward: fresh ideas to add, or open questions worth raising. Each note is a few words, like something the user would write themselves. Mark each as an "idea" or a "question". Propose only what genuinely helps — a handful at most, and an empty list if nothing is worth adding. Never propose a note that just restates one already on the board.
 
+${UNDERSTANDING_TRIAGE}
+
 You choose only the text of the new notes; the app decides where they go and never draws connections for you.`
 
 /** Render the reflect request as the user message: the whole board, in full. */
@@ -256,6 +263,10 @@ export function renderReflection(payload: ReflectPayload): string {
 		proximityHeading: 'Notably close:',
 		effectiveHeading: 'Strongest combined links:',
 	})) {
+		lines.push(line)
+	}
+
+	for (const line of renderUnderstanding(payload.understanding, payload.driftSince)) {
 		lines.push(line)
 	}
 

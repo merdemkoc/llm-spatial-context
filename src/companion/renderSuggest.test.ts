@@ -157,3 +157,23 @@ describe('SUGGEST_SYSTEM_PROMPT', () => {
 		expect(SUGGEST_SYSTEM_PROMPT).toContain('"gravity"')
 	})
 })
+
+describe('renderSuggestRequest with a standing understanding', () => {
+	it('states the themes it already believes in, so it does not re-propose them', () => {
+		const rendered = renderSuggestRequest({
+			board,
+			understanding: {
+				themes: [{ name: 'Deal friction', meaning: 'What stalls deals', members: ['a', 'b'] }],
+				reading: 'A board about why deals stall.',
+				narrative: '',
+				tensions: [],
+				derivedFromNodes: ['a', 'b'],
+			},
+		})
+		expect(rendered).toContain('Deal friction')
+	})
+
+	it('omits the section when there is no understanding', () => {
+		expect(renderSuggestRequest({ board })).not.toContain('understood this board to be')
+	})
+})

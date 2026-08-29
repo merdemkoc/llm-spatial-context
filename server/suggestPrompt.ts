@@ -20,9 +20,10 @@ import {
 	renderBoardBlocks,
 	renderRecentComments,
 } from './prompting/boardRender.ts'
-import { CANVAS_PRIMER } from './prompting/fragments.ts'
+import { CANVAS_PRIMER, UNDERSTANDING_TRIAGE } from './prompting/fragments.ts'
 import { isCleanRemark } from './prompting/remark.ts'
-import type { BoardSummaryPayload } from './prompting/types.ts'
+import { renderUnderstanding } from './prompting/understanding.ts'
+import type { BoardSummaryPayload, BoardUnderstanding } from './prompting/types.ts'
 
 /** The suggester model. Its own env var, falling back to the observer's, then the default. */
 export function suggesterModel(): string {
@@ -37,6 +38,8 @@ ${CANVAS_PRIMER}
 You are given the whole board, its existing clusters, the ideas standing alone, and the explicit relations the user drew. You choose the MEMBERS — which ideas belong together — and say in one short line why. You never decide where they go; the app arranges them. You never invent a connection: this only ever suggests moving ideas nearer each other, never drawing an arrow or adding anything new.
 
 Suggest a grouping only when it is genuinely warranted: the ideas share a clear theme or an explicit relation, and they are currently apart rather than already clustered. Never propose a set that is already sitting together. When nothing clearly warrants it, return suggest=false — that is the common, correct answer. Keep the rationale to one short, plain sentence that names the theme; do not instruct or coach.
+
+${UNDERSTANDING_TRIAGE}
 
 Return the structured decision: suggest=true with two or more member ids and a one-sentence "comment", or suggest=false with no members and an empty comment.`
 
@@ -71,6 +74,10 @@ export interface SuggestPayload {
 	recentComments?: string[]
 	/** The user's grouping intent from the on-demand prompt (e.g. "by user-journey stage"). */
 	intent?: string
+	/** The companion's standing reading of this board. Absent until the first digest runs. */
+	understanding?: BoardUnderstanding
+	/** How much the board has drifted since that reading was taken. */
+	driftSince?: number
 }
 
 /** The suggester's verdict, after validation. */
@@ -110,6 +117,10 @@ export function renderSuggestRequest(payload: SuggestPayload): string {
 		// It is part of what a grouping reads — two apart-but-related ideas are the candidates.
 		proximityHeading: 'Notably close on the board:',
 	})) {
+		lines.push(line)
+	}
+
+	for (const line of renderUnderstanding(payload.understanding, payload.driftSince)) {
 		lines.push(line)
 	}
 

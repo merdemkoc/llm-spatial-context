@@ -258,3 +258,24 @@ describe('interpretReflection', () => {
 		expect(result.focus).toEqual([])
 	})
 })
+
+describe('renderReflection with a standing understanding', () => {
+	const understanding = {
+		themes: [{ name: 'Deal friction', meaning: 'What stalls deals', members: ['a', 'b'] }],
+		reading: 'A board about why deals stall.',
+		narrative: '',
+		tensions: [],
+		derivedFromNodes: ['a', 'b'],
+	}
+
+	it('states the themes it already believes in, so it does not re-propose them', () => {
+		const rendered = renderReflection({ board, persona: 'critique', understanding })
+		expect(rendered).toContain('Deal friction')
+	})
+
+	it('omits the section when there is no understanding', () => {
+		expect(renderReflection({ board, persona: 'critique' })).not.toContain(
+			'understood this board to be'
+		)
+	})
+})

@@ -243,3 +243,56 @@ describe('interpretDecision', () => {
 		})
 	})
 })
+
+const understanding = {
+	themes: [{ name: 'Deal friction', meaning: 'What stalls enterprise deals', members: ['a', 'b'] }],
+	reading: 'A board about why deals stall.',
+	narrative: 'Started at pricing, kept returning to SSO.',
+	tensions: ['Nothing says whether onboarding causes churn or follows it.'],
+	derivedFromNodes: ['a', 'b'],
+}
+
+describe('renderEpisode with a standing understanding', () => {
+	it('states the themes, the reading, the narrative and the tensions', () => {
+		const rendered = renderEpisode({ episode: { structural: [], pairs: [] }, understanding })
+		expect(rendered).toContain('Deal friction')
+		expect(rendered).toContain('A board about why deals stall.')
+		expect(rendered).toContain('Started at pricing, kept returning to SSO.')
+		expect(rendered).toContain('Nothing says whether onboarding causes churn or follows it.')
+	})
+
+	it('says how stale the reading is, so the model can discount it', () => {
+		const rendered = renderEpisode({
+			episode: { structural: [], pairs: [] },
+			understanding,
+			driftSince: 8,
+		})
+		expect(rendered).toMatch(/8 changes ago/)
+	})
+
+	it('omits the section entirely when there is no understanding', () => {
+		const rendered = renderEpisode({ episode: { structural: [], pairs: [] } })
+		expect(rendered).not.toContain('understood this board to be')
+	})
+
+	it('places the understanding after the change, so the change stays the subject', () => {
+		const rendered = renderEpisode({
+			episode: { structural: [{ type: 'node_moved', nodeId: 'a' }], pairs: [] },
+			context: { labels: { a: 'pricing is the blocker' }, relations: [] },
+			understanding,
+		})
+		expect(rendered.indexOf('What the user did')).toBeLessThan(rendered.indexOf('Deal friction'))
+	})
+})
+
+describe('SYSTEM_PROMPT understanding triage', () => {
+	it('tells the observer how to judge a change against the standing reading', () => {
+		expect(SYSTEM_PROMPT).toContain('FITS')
+		expect(SYSTEM_PROMPT).toContain('EXTENDS')
+		expect(SYSTEM_PROMPT).toContain('CONTRADICTS')
+	})
+
+	it('forbids narrating the understanding back', () => {
+		expect(SYSTEM_PROMPT).toContain('never itself a reason to speak')
+	})
+})
