@@ -135,3 +135,5 @@ export {
 	IDLE_BACKOFF_MARGIN_MS,
 	IDLE_BACKOFF_STEP_MS,
 } from '@/domain/idleBackoff'
+
+export { DRIFT_THRESHOLD, driftOf, driftWeight } from '@/domain/understandingDrift'

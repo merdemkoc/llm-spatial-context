@@ -8,6 +8,7 @@
  * server-side; the browser only ships the episode and receives the verdict.
  */
 import type { BoardSummary, EpisodeSummary, NodeId } from '@/domain'
+import type { BoardUnderstanding } from '@/companion/digestClient'
 
 /** The model's verdict. `comment` is null when it chose to stay silent (`speak: false`). */
 export interface ObserverDecision {
@@ -47,6 +48,10 @@ export interface ObserveRequest {
 	 * leaving a cluster. Optional: the observer reads it if present and works without it.
 	 */
 	board?: BoardSummary
+	/** The companion's standing reading of the board. Absent until the first digest returns. */
+	understanding?: BoardUnderstanding
+	/** How much the board has drifted since that reading was taken. */
+	driftSince?: number
 }
 
 export interface ObserverClient {

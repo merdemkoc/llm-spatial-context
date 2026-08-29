@@ -54,6 +54,8 @@ import {
 	buildEpisodeSummary,
 	createEpisodeRecorder,
 	createIdleBackoff,
+	driftOf,
+	DRIFT_THRESHOLD,
 	episodeNodes,
 	EPISODE_BUFFER_LIMIT,
 	EPISODE_IDLE_MS,
@@ -70,6 +72,8 @@ import type { EpisodeContext, ObserverClient } from '@/companion/observerClient'
 import type { GroupingProposal, SuggestClient } from '@/companion/suggestClient'
 import type { IdeaProposal, ReflectClient, Reflection } from '@/companion/reflectClient'
 import type { VoiceClient } from '@/companion/voiceClient'
+import { isBlankUnderstanding } from '@/companion/digestClient'
+import type { BoardUnderstanding, DigestClient } from '@/companion/digestClient'
 import {
 	describeGesture,
 	insertByPriority,
@@ -83,6 +87,7 @@ import {
 	type ThoughtState,
 } from '@/companion/thoughtQueue'
 import {
+	boardUnderstanding,
 	companionFocus,
 	companionPacing,
 	companionQueue,
@@ -239,6 +244,11 @@ export interface CompanionOptions {
 	 * the write reaches the canvas.
 	 */
 	createAgentRelations?: (relations: { from: NodeId; to: NodeId; label?: string }[]) => number
+	/**
+	 * The board digest. Optional: without it the companion runs exactly as it did before, with
+	 * no standing understanding in any prompt.
+	 */
+	digest?: DigestClient
 }
 
 /** The running companion. `dispose` tears it down; the rest are the canvas AI controls' handles. */
@@ -329,6 +339,7 @@ export function createCompanion({
 	planIdeas,
 	createAgentNotes,
 	createAgentRelations,
+	digest,
 }: CompanionOptions): Companion {
 	/** Oldest turn first. The head is the only thought that may speak. */
 	let queue: QueuedThought[] = []
@@ -349,6 +360,12 @@ export function createCompanion({
 	let agentEditUntil = 0
 	// When the last proactive proposal was made, for the cooldown between them.
 	let lastProactiveAt = 0
+	/** What the companion understands the board to be, and how far the board has moved since. */
+	let understanding: BoardUnderstanding | null = null
+	let drift = DRIFT_THRESHOLD
+	let deriving = false
+	/** Aborts the in-flight derivation, if any — the digest's own `inFlight`, for `dispose`. */
+	let deriveController: AbortController | null = null
 	/** The in-flight request of whichever direct thought is thinking, so a newer one supersedes it. */
 	let inFlight: AbortController | null = null
 	/** Cancels the pump's own wake-up, when it is waiting on nothing but the clock. */
@@ -474,6 +491,44 @@ export function createCompanion({
 	const record = (comment: string) => {
 		const next = [...companionTranscript.get(), { comment, at: now() }]
 		companionTranscript.set(next.slice(-TRANSCRIPT_LIMIT))
+	}
+
+	/**
+	 * Re-read the whole board in the background.
+	 *
+	 * Off the queue and off the critical path: a digest speaks to nobody, so it must never take
+	 * a speaking slot or make a remark wait. A transport failure — cancelled, timed out,
+	 * rejected — leaves the previous understanding and the drift score alone, so the next
+	 * episode simply tries again. A *resolved* answer is a different case: the route fails safe,
+	 * so a broken digest (no key, a rejected request, output that didn't parse) still resolves
+	 * with HTTP 200 and an empty understanding. `isBlankUnderstanding` catches that — a blank
+	 * answer keeps the reading already held rather than overwriting a good one with nothing.
+	 */
+	const derive = async (boardSummary: BoardSummary) => {
+		if (!digest || deriving) return
+		deriving = true
+		// Captured before the await, which can run up to `DIGEST_TIMEOUT_MS`: this is the drift
+		// this derivation is actually answering for. Drift that arrives during the round trip
+		// describes changes the snapshot above never saw, so it must survive whatever this
+		// derivation decides — only the portion spent gets reset, not the running total.
+		const spent = drift
+		deriveController = new AbortController()
+		try {
+			const next = await digest.digest(
+				{ board: boardSummary, recentComments: recentComments() },
+				deriveController.signal
+			)
+			if (disposed) return
+			drift = Math.max(0, drift - spent)
+			if (understanding && isBlankUnderstanding(next)) return
+			understanding = next
+			boardUnderstanding.set(next)
+		} catch {
+			// Keep what we had. A stale reading is better than none, and better than a wrong one.
+		} finally {
+			deriving = false
+			deriveController = null
+		}
 	}
 
 	/**
@@ -797,6 +852,8 @@ export function createCompanion({
 					context: context?.(thought.summary!) ?? EMPTY_CONTEXT,
 					recentComments: recentComments(),
 					board: boardSummary,
+					understanding: understanding ?? undefined,
+					driftSince: drift,
 				},
 				thought.controller.signal
 			)
@@ -867,7 +924,14 @@ export function createCompanion({
 		let proposal: GroupingProposal | null = null
 		try {
 			proposal = await suggest.suggest(
-				{ board: boardSummary, trigger, recentComments: recentComments(), intent },
+				{
+					board: boardSummary,
+					trigger,
+					recentComments: recentComments(),
+					intent,
+					understanding: understanding ?? undefined,
+					driftSince: drift,
+				},
 				thought.controller.signal
 			)
 		} catch {
@@ -906,7 +970,13 @@ export function createCompanion({
 		let reflection: Reflection | null = null
 		try {
 			reflection = await reflect.reflect(
-				{ board: boardSummary, persona },
+				{
+					board: boardSummary,
+					persona,
+					recentComments: recentComments(),
+					understanding: understanding ?? undefined,
+					driftSince: drift,
+				},
 				thought.controller.signal
 			)
 		} catch {
@@ -960,7 +1030,13 @@ export function createCompanion({
 		let reflection: Reflection | null = null
 		try {
 			reflection = await reflect.reflect(
-				{ board: boardSummary, recentChange },
+				{
+					board: boardSummary,
+					recentChange,
+					recentComments: recentComments(),
+					understanding: understanding ?? undefined,
+					driftSince: drift,
+				},
 				thought.controller.signal
 			)
 		} catch {
@@ -1029,6 +1105,16 @@ export function createCompanion({
 			})
 		)
 		void think(thought)
+
+		// Free, local, and above the model call — the same shape as `isTrivialEpisode`. Guarded
+		// on `digest` first, so a board read that nobody will use — `buildBoardSummary` walks
+		// every node, influence and relation — is never paid for without a digest client.
+		if (digest && drift >= DRIFT_THRESHOLD) {
+			const boardSummary = board?.()
+			if (boardSummary && boardSummary.nodeCount >= 3) {
+				void derive(boardSummary)
+			}
+		}
 	}
 
 	/**
@@ -1164,6 +1250,16 @@ export function createCompanion({
 
 	const disposeRecorder = createEpisodeRecorder(stream, {
 		onEpisode: (summary, events) => {
+			// Counted here, over the newly-arrived `events` only, and before the carried merge
+			// below — not in `handleEpisode`, which is re-entered with events already counted
+			// once: the recorder re-folds a carried arc into `merged`, and `flushCarried` replays
+			// the same `carried` array from the pump's `finally`. Either would add the same
+			// event's weight again. Arriving here exactly once per event is what keeps the score
+			// honest, and this still sits above `handleEpisode`'s own trivial-episode gate, so
+			// the ordering the drift score depends on — free and local before the model call —
+			// is unchanged.
+			drift += driftOf(events)
+
 			// A carried arc rides along, re-folded with the new events as a single episode: what
 			// the observer receives is what it would have seen had the user never paused.
 			// Bounded like the recorder's own buffer, and with the same tradeoff — the slice
@@ -1209,6 +1305,8 @@ export function createCompanion({
 		for (const thought of queue) thought.controller.abort()
 		inFlight?.abort()
 		inFlight = null
+		deriveController?.abort()
+		deriveController = null
 		queue = []
 		carried = []
 		// Abort only cancels a request; a clip already speaking has to be silenced, or the
@@ -1226,6 +1324,8 @@ export function createCompanion({
 		groupingSuggestion.set(null)
 		ideaSuggestions.set([])
 		relationSuggestions.set([])
+		// So does the standing reading of it — a fresh mount should not open on a stale one.
+		boardUnderstanding.set(null)
 	}
 
 	return {

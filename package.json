@@ -19,7 +19,8 @@
 		"lint": "eslint .",
 		"lint:fix": "eslint . --fix",
 		"format": "prettier --write .",
-		"format:check": "prettier --check ."
+		"format:check": "prettier --check .",
+		"eval": "tsx evals/run.ts"
 	},
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.116.0",

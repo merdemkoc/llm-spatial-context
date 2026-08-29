@@ -13,7 +13,16 @@
  *
  * Config is read inside functions, never a module constant, like `prompt.ts`.
  */
-import type { BoardSummaryPayload } from './prompt.ts'
+import {
+	boardLabels,
+	named,
+	renderBoardBlocks,
+	renderRecentComments,
+} from './prompting/boardRender.ts'
+import { CANVAS_PRIMER } from './prompting/fragments.ts'
+import { isCleanRemark } from './prompting/remark.ts'
+import { renderUnderstanding } from './prompting/understanding.ts'
+import type { BoardSummaryPayload, BoardUnderstanding } from './prompting/types.ts'
 
 /** Most new ideas a single reflection may propose. */
 export const MAX_IDEAS = 5
@@ -66,6 +75,17 @@ export interface ReflectPayload {
 	recentChange?: string
 	/** Which lens to reflect through — see `REFLECT_PERSONAS`. Absent/unknown → the synthesizer. */
 	persona?: string
+	/**
+	 * What this companion recently said, so a reading can vary from itself.
+	 *
+	 * The observer and the suggester have always been given this; the reflection was not,
+	 * which let the same persona asked twice return the same reading word for word.
+	 */
+	recentComments?: string[]
+	/** The companion's standing reading of this board. Absent until the first digest runs. */
+	understanding?: BoardUnderstanding
+	/** How much the board has drifted since that reading was taken. */
+	driftSince?: number
 }
 
 /** One lens the reflection can take on: how it reads the board, and whether it proposes notes. */
@@ -73,6 +93,11 @@ export interface ReflectPersona {
 	label: string
 	lens: string
 	proposesIdeas: boolean
+	/**
+	 * Overrides the closing ask. Present only where neither default fits — the two defaults
+	 * are "reflect and propose" and "reflect only", and `impact` asks for neither.
+	 */
+	instruction?: string
 }
 
 /**
@@ -80,6 +105,10 @@ export interface ReflectPersona {
  * gap-finder look at the same board and see different things. Some propose new notes (a
  * gap-finder names what is missing), some only comment (a critic challenges what is there).
  * Keyed by the id the client sends; the client shows the labels.
+ *
+ * `impact` is the exception: it is selected by the presence of `recentChange`, not by the
+ * user, so it is deliberately absent from the toolbar's list. It lives here rather than as a
+ * branch in `renderReflection` so that this registry is the single place a lens is defined.
  */
 export const REFLECT_PERSONAS: Record<string, ReflectPersona> = {
 	critique: {
@@ -102,10 +131,20 @@ export const REFLECT_PERSONAS: Record<string, ReflectPersona> = {
 		proposesIdeas: true,
 		lens: 'You are synthesizing this board. Read what it is about as a whole and where it seems to be going.',
 	},
+	impact: {
+		label: 'Impact',
+		proposesIdeas: false,
+		lens: 'You are looking over this board immediately after something on it changed, to say what the board is now.',
+		instruction:
+			'In one or two short, plain sentences, comment on the board\'s latest state and how this change affects it as a whole — what the board is becoming, what it now emphasises or leaves thin. Talk about the ideas by name. Do not propose anything: return empty "ideas" and "relations" lists.',
+	},
 }
 
 /** The lens used when none is chosen or an unknown one is sent. */
 export const DEFAULT_PERSONA = 'synthesizer'
+
+/** The lens a reflection takes when it is reacting to a change rather than freely reading. */
+export const IMPACT_PERSONA = 'impact'
 
 function resolvePersona(id: string | undefined): ReflectPersona {
 	return (id ? REFLECT_PERSONAS[id] : undefined) ?? REFLECT_PERSONAS[DEFAULT_PERSONA]
@@ -151,7 +190,8 @@ export const REFLECTION_SCHEMA = {
 					},
 					connectLabel: {
 						type: 'string',
-						description: 'A short label for that connection (the "why"). Empty when not connecting.',
+						description:
+							'A short label for that connection (the "why"). Empty when not connecting.',
 					},
 				},
 			},
@@ -166,7 +206,10 @@ export const REFLECTION_SCHEMA = {
 				properties: {
 					from: { type: 'string', description: 'The exact id of the note the arrow starts at.' },
 					to: { type: 'string', description: 'The exact id of the note the arrow points to.' },
-					label: { type: 'string', description: 'A short label naming the connection (the "why").' },
+					label: {
+						type: 'string',
+						description: 'A short label naming the connection (the "why").',
+					},
 				},
 			},
 			description:
@@ -178,7 +221,9 @@ export const REFLECTION_SCHEMA = {
 /** The reflection's whole character, in one place. */
 export const REFLECT_SYSTEM_PROMPT = `You are a thinking companion looking over someone's whole spatial canvas of ideas.
 
-Each idea is a note. Two ideas near each other share a proximity signal called "influence"; an arrow between them is an explicit "relation" with its own strength, "gravity", independent of distance. You are given the whole board: every note's text, every connection with its gravity, which ideas sit close, which stand alone, and which are already clustered.
+${CANVAS_PRIMER}
+
+You are given the whole board: every note's text, every connection with its gravity, which ideas sit close, which stand alone, and which are already clustered.
 
 Do two things. First, read the board as a whole and say what it is about — the shape of the thinking, where it seems to be going, or what is conspicuously missing — in one or two short, plain sentences. Talk about the ideas by name. Interpret; do not just list what is there.
 
@@ -186,84 +231,52 @@ Second, propose a few new notes that would move the thinking forward: fresh idea
 
 You choose only the text of the new notes; the app decides where they go and never draws connections for you.`
 
-/** Name an idea by its full text — no truncation, this is the deep look. */
-function named(id: string | undefined, labels: Record<string, string>): string {
-	if (!id) return 'an idea'
-	const text = labels[id]
-	return text ? `"${text}"` : `an untitled idea (${id})`
-}
-
 /** Render the reflect request as the user message: the whole board, in full. */
 export function renderReflection(payload: ReflectPayload): string {
 	const board = payload.board ?? {}
 	const nodes = board.nodes ?? []
-	const labels: Record<string, string> = {}
-	for (const node of nodes) {
-		const text = node.text?.trim()
-		if (text) labels[node.id] = text
-	}
+	const labels = boardLabels(board)
 
 	const recentChange = payload.recentChange?.trim()
-	const persona = resolvePersona(payload.persona)
+	// Reacting to a change is its own lens, resolved from the registry like every other, so
+	// this function no longer decides what a change-comment is — the persona does.
+	const persona = recentChange ? REFLECT_PERSONAS[IMPACT_PERSONA] : resolvePersona(payload.persona)
 
-	const lines: string[] = []
-	// A change-comment keeps its impact framing; an open reflection leads with the persona's lens.
-	if (!recentChange) lines.push(persona.lens, '')
+	const lines: string[] = [persona.lens, '']
 	lines.push('Here is the whole board the user is working on.', '')
 	if (recentChange) {
 		lines.push(`What just happened: ${recentChange}.`, '')
 	}
-	lines.push('Ideas on the canvas (use the exact id in brackets to say which your comment is about):')
+	lines.push(
+		'Ideas on the canvas (use the exact id in brackets to say which your comment is about):'
+	)
 	for (const node of nodes) lines.push(`- ${named(node.id, labels)} [${node.id}]`)
 	lines.push('')
 
-	const clusters = (board.clusters ?? []).filter((cluster) => (cluster.members ?? []).length >= 2)
-	if (clusters.length > 0) {
-		lines.push('Already sitting together:')
-		for (const cluster of clusters) {
-			lines.push(`- ${(cluster.members ?? []).map((id) => named(id, labels)).join(', ')}`)
-		}
-		lines.push('')
+	for (const line of renderBoardBlocks(board, labels, {
+		clusterHeading: 'Already sitting together:',
+		relationHeading: 'Explicit connections:',
+		// The deep look may weigh the figures; they are input to its judgement, not output.
+		relationGravity: true,
+		proximityHeading: 'Notably close:',
+		effectiveHeading: 'Strongest combined links:',
+	})) {
+		lines.push(line)
 	}
 
-	const loners = board.loners ?? []
-	if (loners.length > 0) {
-		lines.push(`Ideas standing alone: ${loners.map((id) => named(id, labels)).join(', ')}`)
-		lines.push('')
+	for (const line of renderUnderstanding(payload.understanding, payload.driftSince)) {
+		lines.push(line)
 	}
 
-	const relations = board.relations ?? []
-	if (relations.length > 0) {
-		lines.push('Explicit connections:')
-		for (const relation of relations) {
-			const label = relation.type ? `, "${relation.type}"` : ''
-			lines.push(
-				`- ${named(relation.source, labels)} → ${named(relation.target, labels)} (gravity ${relation.gravity ?? '?'}${label})`
-			)
-		}
-		lines.push('')
+	for (const line of renderRecentComments(
+		payload.recentComments ?? [],
+		'You recently said — do not repeat these, find something else in the board:'
+	)) {
+		lines.push(line)
 	}
 
-	const proximities = board.proximities ?? []
-	if (proximities.length > 0) {
-		const pairs = proximities.map((pair) => `${named(pair.source, labels)} & ${named(pair.target, labels)}`)
-		lines.push(`Notably close: ${pairs.join('; ')}.`)
-		lines.push('')
-	}
-
-	const effective = board.effectiveStrengths ?? []
-	if (effective.length > 0) {
-		lines.push('Strongest combined links:')
-		for (const pair of effective) {
-			lines.push(`- ${named(pair.source, labels)} & ${named(pair.target, labels)} (${pair.effectiveStrength ?? '?'})`)
-		}
-		lines.push('')
-	}
-
-	if (recentChange) {
-		lines.push(
-			'In one or two short, plain sentences, comment on the board\'s latest state and how this change affects it as a whole — what the board is becoming, what it now emphasises or leaves thin. Talk about the ideas by name. Do not propose anything: return empty "ideas" and "relations" lists.'
-		)
+	if (persona.instruction) {
+		lines.push(persona.instruction)
 	} else if (persona.proposesIdeas) {
 		lines.push(
 			`Reflect on the board through this lens, talking about the ideas by name, then propose up to ${MAX_IDEAS} new ideas or questions worth adding — each an "idea" or a "question". A new note may also connect to an existing note: set its "connectTo" to that note's id and "connectLabel" to a short reason (leave both empty otherwise).`
@@ -304,7 +317,10 @@ export function interpretReflection(text: string, board?: BoardSummaryPayload): 
 	// anchor a highlight or an arrow.
 	const known = new Set((board?.nodes ?? []).map((node) => node.id))
 
-	const comment = typeof parsed.comment === 'string' ? parsed.comment.trim() : ''
+	const rawComment = typeof parsed.comment === 'string' ? parsed.comment.trim() : ''
+	// A reading that did not survive the guard is dropped on its own; the proposed notes are
+	// still worth having, and an empty comment is already a legitimate reflection.
+	const comment = isCleanRemark(rawComment) ? rawComment : ''
 
 	const rawIdeas = Array.isArray(parsed.ideas) ? parsed.ideas : []
 	const ideas: IdeaSuggestion[] = rawIdeas
@@ -313,7 +329,10 @@ export function interpretReflection(text: string, board?: BoardSummaryPayload): 
 			if (!ideaText) return null
 			const kind: IdeaKind = entry?.kind === 'question' ? 'question' : 'idea'
 			// A connection is kept only when it names a real note; otherwise the idea stands alone.
-			const connectTo = typeof entry?.connectTo === 'string' && known.has(entry.connectTo) ? entry.connectTo : undefined
+			const connectTo =
+				typeof entry?.connectTo === 'string' && known.has(entry.connectTo)
+					? entry.connectTo
+					: undefined
 			if (!connectTo) return { text: ideaText, kind }
 			const connectLabel = typeof entry?.connectLabel === 'string' ? entry.connectLabel.trim() : ''
 			return { text: ideaText, kind, connectTo, ...(connectLabel ? { connectLabel } : {}) }
@@ -333,7 +352,11 @@ export function interpretReflection(text: string, board?: BoardSummaryPayload): 
 		.filter((relation): relation is RelationSuggestion => relation !== null)
 
 	const focus = Array.isArray(parsed.focus)
-		? [...new Set(parsed.focus.filter((id): id is string => typeof id === 'string' && known.has(id)))]
+		? [
+				...new Set(
+					parsed.focus.filter((id): id is string => typeof id === 'string' && known.has(id))
+				),
+			]
 		: []
 
 	return { comment, ideas, relations, focus }

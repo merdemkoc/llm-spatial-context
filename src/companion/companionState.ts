@@ -15,6 +15,7 @@
 import { atom } from 'tldraw'
 import { EPISODE_IDLE_MS } from '@/domain'
 import type { ClusterPlacement, NodeId } from '@/domain'
+import type { BoardUnderstanding } from '@/companion/digestClient'
 
 /** Whether finalized episodes are sent to the model. Off means the companion is asleep. */
 export const observationEnabled = atom('companion observation enabled', true)
@@ -237,5 +238,16 @@ export const commitIdeas = atom<((ideaIds: string[]) => void) | null>(
 )
 export const commitRelations = atom<((relationIds: string[]) => void) | null>(
 	'companion commit relations',
+	null
+)
+
+/**
+ * What the companion currently understands the board to be.
+ *
+ * Published so a panel can show it later, and so a test can read it without reaching inside
+ * the orchestrator. `null` until the first digest returns.
+ */
+export const boardUnderstanding = atom<BoardUnderstanding | null>(
+	'companion board understanding',
 	null
 )

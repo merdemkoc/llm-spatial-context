@@ -9,6 +9,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
 	createEventStream,
+	DRIFT_THRESHOLD,
 	EPISODE_IDLE_MS,
 	IDLE_BACKOFF_CAP_MS,
 	IDLE_BACKOFF_MARGIN_MS,
@@ -29,7 +30,10 @@ import type { ObserveRequest, ObserverClient, ObserverDecision } from '@/compani
 import type { GroupingProposal, SuggestClient, SuggestRequest } from '@/companion/suggestClient'
 import type { Reflection, ReflectClient, ReflectRequest } from '@/companion/reflectClient'
 import type { VoiceClient } from '@/companion/voiceClient'
+import { EMPTY_UNDERSTANDING } from '@/companion/digestClient'
+import type { BoardUnderstanding, DigestClient, DigestRequest } from '@/companion/digestClient'
 import {
+	boardUnderstanding,
 	companionFocus,
 	companionPacing,
 	companionQueue,
@@ -260,6 +264,24 @@ function fakeReflecter() {
 	return { client, calls }
 }
 
+/** A digest whose answer the test resolves. Nothing waits on it, but tests need its timing. */
+function fakeDigester() {
+	const calls: {
+		request: DigestRequest
+		signal?: AbortSignal
+		resolve: (understanding: BoardUnderstanding) => void
+		reject: (error: Error) => void
+	}[] = []
+	const client: DigestClient = {
+		digest(request, signal) {
+			return new Promise<BoardUnderstanding>((resolve, reject) => {
+				calls.push({ request, signal, resolve, reject })
+			})
+		},
+	}
+	return { client, calls }
+}
+
 /** Turn proposals into ghost ideas the way the adapter would — index-keyed, lined up. */
 const ghostIdeas = (
 	proposals: {
@@ -322,6 +344,7 @@ beforeEach(() => {
 	groupingSuggestion.set(null)
 	ideaSuggestions.set([])
 	relationSuggestions.set([])
+	boardUnderstanding.set(null)
 })
 
 describe('createCompanion', () => {
@@ -1772,5 +1795,332 @@ describe('createCompanion', () => {
 
 			expect(companionPacing.get()).toEqual({ idleMs: EPISODE_IDLE_MS, dropped: 0 })
 		})
+	})
+})
+
+describe('the standing understanding', () => {
+	it('derives once the board drifts past the threshold', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		// Two new notes is drift 6 — exactly the threshold.
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
+
+		expect(calls).toHaveLength(1)
+	})
+
+	it('does not derive for dragging, however much of it', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		for (let i = 0; i < 50; i++) {
+			stream.emit([
+				{ type: 'node_moved', nodeId: 'a', previous: { x: 0, y: 0 }, current: { x: i, y: i } },
+			])
+		}
+		timer.flush()
+
+		expect(calls).toHaveLength(0)
+	})
+
+	it('never puts a derivation in the thought queue', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
+
+		// A digest speaks to nobody, so it must never take a speaking slot.
+		// The derivation ran...
+		expect(calls).toHaveLength(1)
+		// ...and took no speaking slot: the queue holds only the episode's own thought.
+		expect(companionQueue.get()).toHaveLength(1)
+	})
+
+	it('keeps the previous understanding when a later derivation fails', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
+		calls[0].resolve({ ...EMPTY_UNDERSTANDING, reading: 'A board about why deals stall.' })
+		await tick()
+
+		stream.emit([
+			{ type: 'node_created', nodeId: 'c' },
+			{ type: 'node_created', nodeId: 'd' },
+		])
+		timer.flush()
+		calls[1].reject(new Error('502'))
+		await tick()
+
+		expect(boardUnderstanding.get()?.reading).toBe('A board about why deals stall.')
+	})
+
+	it('keeps the previous understanding when a later derivation resolves blank', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
+		calls[0].resolve({ ...EMPTY_UNDERSTANDING, reading: 'A board about why deals stall.' })
+		await tick()
+
+		stream.emit([
+			{ type: 'node_created', nodeId: 'c' },
+			{ type: 'node_created', nodeId: 'd' },
+		])
+		timer.flush()
+		// What the server's fail-safe returns for a broken digest — a missing key, a rejected
+		// request, unparseable output — is HTTP 200 with nothing in it. Resolved, not rejected,
+		// so this is the case the reject-based test above cannot cover: a success wearing a
+		// failure's clothes must not be mistaken for a real, empty reading of the board.
+		calls[1].resolve(EMPTY_UNDERSTANDING)
+		await tick()
+
+		expect(boardUnderstanding.get()?.reading).toBe('A board about why deals stall.')
+	})
+
+	it('ships the understanding and its staleness to the observer', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer, calls: observed } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
+		calls[0].resolve({ ...EMPTY_UNDERSTANDING, reading: 'A board about why deals stall.' })
+		await tick()
+
+		stream.emit([{ type: 'node_created', nodeId: 'c' }])
+		timer.flush()
+
+		const request = observed.at(-1)!.request
+		expect(request.understanding?.reading).toBe('A board about why deals stall.')
+		expect(request.driftSince).toBeGreaterThan(0)
+	})
+
+	/**
+	 * Regression: `handleEpisode` used to be re-entered with events already counted once — the
+	 * recorder re-folds a carried arc into `merged`, and `flushCarried` replays the same
+	 * `carried` array from the pump's `finally` — so a carried arc's drift weight was added
+	 * again each time it was touched, firing paid derivations early. The fix moved the add into
+	 * the recorder's `onEpisode`, over the newly-arrived events only; this pins that it stays
+	 * there.
+	 *
+	 * Built the way `companion.test.ts`'s "carries a gesture the queue had no room for into the
+	 * next thought" does: fill the queue, then overflow it twice while it stays full, so the
+	 * carried arc is re-folded with a second episode — the merge branch the bug lived in — before
+	 * a freed slot flushes it — the replay branch the bug also lived in.
+	 */
+	it('does not double-count drift when a carried arc is merged and later flushed', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer, calls: observed } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		// Fill the queue with fillers whose own drift weight is zero (dragging scores nothing),
+		// so every point counted below is attributable to the two overflow events alone.
+		for (let i = 0; i < QUEUE_LIMIT; i += 1) {
+			stream.emit([influence(`s${i}`, `t${i}`, 0.04, 0.58)])
+			timer.flush()
+		}
+		expect(observed).toHaveLength(QUEUE_LIMIT)
+
+		// First overflow: nowhere to go, so it opens the carried arc. Drift weight 2.
+		stream.emit([
+			{ type: 'relation_created', relationId: 'r1', source: 'a', target: 'b', gravity: 0.5 },
+		])
+		timer.flush()
+
+		// Second overflow arrives while the arc is still open: the recorder re-folds the carried
+		// event with this one into a single merged episode. Drift weight 3.
+		stream.emit([{ type: 'node_created', nodeId: 'x' }])
+		timer.flush()
+
+		// A slot frees, and the merged arc — both carried events — flushes into a real thought.
+		observed[0].resolve({ speak: false, comment: null })
+		await tick()
+
+		// Honest total: the initial `DRIFT_THRESHOLD` a fresh mount always starts at, plus 2
+		// (relation_created) and 3 (node_created), each counted exactly once however many times
+		// the arc was re-folded or replayed. A double-count would show 2 extra after the merge
+		// (the first overflow's weight added twice) and 5 more again once the flush replayed
+		// the whole arc — either would already have crossed the threshold and fired a derivation
+		// before this, the fifth thought, ever reached the observer.
+		expect(observed.at(-1)!.request.driftSince).toBe(DRIFT_THRESHOLD + 2 + 3)
+	})
+
+	it('keeps drift that arrives while a derivation is in flight, discounting only what it answered for', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer, calls: observed } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		// A fresh mount's drift already sits at `DRIFT_THRESHOLD`, so this one episode (weight 2)
+		// crosses it and starts a derivation. `derive` snapshots the drift it is answering for
+		// before the await below — this is that snapshot's value.
+		stream.emit([
+			{ type: 'relation_created', relationId: 'r1', source: 'a', target: 'b', gravity: 0.5 },
+		])
+		timer.flush()
+		expect(calls).toHaveLength(1)
+
+		// More of the board changes while that derivation is still in flight — drift the
+		// snapshot above never saw, and must not be erased by whatever the derivation decides.
+		stream.emit([{ type: 'node_created', nodeId: 'x' }])
+		timer.flush()
+
+		calls[0].resolve({
+			themes: [],
+			reading: 'A board about something.',
+			narrative: '',
+			tensions: [],
+			derivedFromNodes: [],
+		})
+		await tick()
+
+		// A third, otherwise-silent episode (zero drift weight of its own) reads the score back
+		// exactly: the snapshot (`DRIFT_THRESHOLD` + 2) came off, and the 3 that arrived during
+		// the await survived.
+		stream.emit([influence('p', 'q', 0.04, 0.58)])
+		timer.flush()
+
+		expect(observed.at(-1)!.request.driftSince).toBe(3)
+	})
+
+	it('aborts an in-flight derivation on dispose', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		const companion = createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
+		expect(calls).toHaveLength(1)
+		expect(calls[0].signal?.aborted).toBe(false)
+
+		companion.dispose()
+
+		expect(calls[0].signal?.aborted).toBe(true)
 	})
 })

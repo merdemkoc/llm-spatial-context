@@ -11,7 +11,11 @@
  * imported by relative path, like `renderEpisode`.
  */
 import { describe, expect, it } from 'vitest'
-import { interpretGrouping, renderSuggestRequest } from '../../server/suggestPrompt.ts'
+import {
+	interpretGrouping,
+	renderSuggestRequest,
+	SUGGEST_SYSTEM_PROMPT,
+} from '../../server/suggestPrompt.ts'
 
 const board = {
 	nodeCount: 4,
@@ -65,8 +69,15 @@ describe('renderSuggestRequest', () => {
 	it('gives the model each note in full, not truncated', () => {
 		const longText =
 			'onboarding is where new teams either reach their first win or quietly churn away'
-		const longBoard = { ...board, nodes: [{ id: 'a', text: longText, hasField: true }, ...board.nodes.slice(1)] }
-		const rendered = renderSuggestRequest({ board: longBoard, trigger: 'demand', recentComments: [] })
+		const longBoard = {
+			...board,
+			nodes: [{ id: 'a', text: longText, hasField: true }, ...board.nodes.slice(1)],
+		}
+		const rendered = renderSuggestRequest({
+			board: longBoard,
+			trigger: 'demand',
+			recentComments: [],
+		})
 		expect(rendered).toContain(longText)
 	})
 
@@ -86,7 +97,11 @@ describe('interpretGrouping', () => {
 			board
 		)
 
-		expect(result).toEqual({ suggest: true, members: ['c', 'd'], comment: 'Both are growth loops.' })
+		expect(result).toEqual({
+			suggest: true,
+			members: ['c', 'd'],
+			comment: 'Both are growth loops.',
+		})
 	})
 
 	it('drops ids that are not on the board, declining if fewer than two survive', () => {
@@ -131,5 +146,54 @@ describe('interpretGrouping', () => {
 			members: [],
 			comment: '',
 		})
+	})
+})
+
+describe('SUGGEST_SYSTEM_PROMPT', () => {
+	it('explains proximity, which it is shown but was never told the meaning of', () => {
+		// `renderSuggestRequest` states which ideas are "notably close on the board"; without
+		// the primer the suggester read that signal with no idea what it measured.
+		expect(SUGGEST_SYSTEM_PROMPT).toContain('"influence"')
+		expect(SUGGEST_SYSTEM_PROMPT).toContain('"gravity"')
+	})
+})
+
+describe('renderSuggestRequest with a standing understanding', () => {
+	it('states the themes it already believes in, so it does not re-propose them', () => {
+		const rendered = renderSuggestRequest({
+			board,
+			understanding: {
+				themes: [{ name: 'Deal friction', meaning: 'What stalls deals', members: ['a', 'b'] }],
+				reading: 'A board about why deals stall.',
+				narrative: '',
+				tensions: [],
+				derivedFromNodes: ['a', 'b'],
+			},
+		})
+		expect(rendered).toContain('Deal friction')
+	})
+
+	it('omits the section when there is no understanding', () => {
+		expect(renderSuggestRequest({ board })).not.toContain('understood this board to be')
+	})
+
+	// The triage travels with the data (`renderUnderstanding`), not with the persona, so every
+	// consumer that is handed an understanding gets it and none that isn't ever sees it.
+	it('carries the fits/extends/contradicts triage whenever an understanding is supplied', () => {
+		const rendered = renderSuggestRequest({
+			board,
+			understanding: {
+				themes: [{ name: 'Deal friction', meaning: 'What stalls deals', members: ['a', 'b'] }],
+				reading: 'A board about why deals stall.',
+				narrative: '',
+				tensions: [],
+				derivedFromNodes: ['a', 'b'],
+			},
+		})
+		expect(rendered).toContain('never itself a reason to speak')
+	})
+
+	it('omits the triage entirely when there is no understanding', () => {
+		expect(renderSuggestRequest({ board })).not.toContain('never itself a reason to speak')
 	})
 })

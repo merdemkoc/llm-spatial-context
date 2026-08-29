@@ -4,7 +4,7 @@ An experiment in giving an LLM **grounded spatial context** about a [tldraw](htt
 
 On top of that model sits the part the rest of it was for: an [AI companion](#the-ai-companion) that watches the representation change, groups the changes into episodes, and speaks only when it judges one worth remarking on.
 
-Built on tldraw, Vite, React 19 and TypeScript, with a two-route Hono server for the companion's model and voice calls.
+Built on tldraw, Vite, React 19 and TypeScript, with a five-route Hono server for the companion's model and voice calls.
 
 ![The canvas with contextual-field overlays, influence badges, and the live canonical-JSON inspector](docs/images/inspector-hero.png)
 
@@ -505,7 +505,11 @@ Both remarks in that transcript are what the model actually said to the canvas u
 - **A remark can be dropped, but only at the door.** A thought is never called off for the canvas having moved; it is asked, at the last moment silence is still free, whether it is too late or no longer true.
 - **The text arrives with the voice.** Deciding what to say and synthesising it are two waits of a few seconds each. Announcing the remark after the first one meant the user read it, finished, and only then heard it read aloud — so the thinking hint stays up through synthesis, and the words are released as playback reports its progress (`spokenPrefix` in `reveal.ts`, position-weighted since an mp3 carries no word timings). The transcript is written as the remark takes the voice rather than when the model answered — a thought dropped at the door was never said — but still _before_ playback, so it survives voice being off or synthesis failing.
 
-**Both API keys live in `server/`.** That is the whole reason this repo has a backend — two Hono routes, `/api/observe` and `/api/speak`, with the prompt and the model choice server-side so the persona can be tuned without shipping anything to the browser. Both routes **fail safe**: a malformed body, a missing key or a 400 from the SDK all degrade to `{ speak: false }` rather than an error at the user. The observer runs with thinking disabled, because `max_tokens` caps thinking plus text and a truncated response parses to nothing — which is indistinguishable from a considered silence.
+**Both API keys live in `server/`.** That is the whole reason this repo has a backend — five Hono routes, `/api/observe`, `/api/suggest`, `/api/reflect`, `/api/digest` and `/api/speak`, with the prompts and the model choice server-side so the persona can be tuned without shipping anything to the browser. Every route **fails safe**: a malformed body, a missing key or a 400 from the SDK all degrade to that agent's own safe answer — silence, a decline, an empty reflection — rather than an error at the user.
+
+**Two layers, not one board.** `/api/digest` reads the whole board and derives a standing _understanding_ of it — its themes, a one- or two-sentence reading, the narrative the session has been circling, and what it leaves unresolved — which the client keeps and hands back to the observer, the suggester and the reflection alongside whatever just happened. So each of those three is shown the board as it currently is _and_ a reading of what it means, and is told, explicitly, how stale that reading is (`driftSince`). Between the two sits a triage every agent applies: the change fits the understanding (already accounted for, usually silence), extends it (name something the reading didn't hold, worth a word), or contradicts it (the reading is now wrong, which is the most worth saying). The understanding is never itself a topic — an agent that summarises it back to the user has failed the same way one that recites an influence score has. A missing or stale digest costs nothing: every field is optional, and an agent with no understanding behaves exactly as it did before `/api/digest` existed.
+
+The observer ran with thinking _disabled_ for a long time, on the reasoning that `max_tokens` caps thinking plus text and a truncated response parses to nothing — indistinguishable from a considered silence. Measuring it (`npm run eval`) showed the opposite problem. Structured output constrains generation to valid JSON, so reasoning the model could not place had nowhere legal to go and was absorbed into the only string open at the time: the remark itself. The result was schema-valid decisions carrying things like `"…worth noticing that tension.}  Actually: {"` — up to 1040 characters of leaked scaffolding, on its way to the voice. Turning thinking on removed the leak, did not measurably cost latency, and cut the longest remark from 654 characters to 169. A second layer (`isCleanRemark`) now rejects a remark that reads as spillage rather than speaking it, because a schema guarantees shape and not sanity.
 
 **The pause is real, and it is measured.** Against the live APIs, warm, re-measured 2026-08-28:
 
@@ -629,11 +633,24 @@ Six things about it are worth knowing:
 ## Layout
 
 ```
-server/                        Two routes, so the API keys never reach the browser
-  index.ts                     Hono app — /api/observe, /api/speak, dist/ in production
+server/                        Five routes, so the API keys never reach the browser
+  index.ts                     Hono app — five routes under /api, dist/ in production
   observe.ts                   One episode in, a speak / stay-silent decision out
-  prompt.ts                    The system prompt, the decision schema, episode → prose
+  suggest.ts                   The whole board in, a grouping proposal out
+  reflect.ts                   The whole board in, a reading plus notes to add out
+  digest.ts                    The whole board in, a standing understanding out — stored, never spoken
+  prompt.ts                    The observer's system prompt, decision schema, episode → prose
+  suggestPrompt.ts             The suggester's character, request rendering, hallucination guard
+  reflectPrompt.ts             The reflection's character and its persona registry
+  digestPrompt.ts              The digest's character and its harder validation
   speak.ts                     Text-to-speech synthesis
+  prompting/                   What the four structured agents share
+    callStructured.ts  The one SDK call — structured output, adaptive thinking, fallback
+    boardRender.ts     A board written for a model, shared by the suggester + reflection
+    fragments.ts       Prompt paragraphs more than one agent needs
+    remark.ts          Is this actually a remark? The leak-catching second layer
+    types.ts           The payload shapes the browser POSTs
+    understanding.ts   One renderer for the standing understanding, shared by all three
 src/
   main.tsx                     React entry point
   App.tsx                      Thin shell, renders <Canvas />
@@ -771,7 +788,7 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 | Real editor        | `adapter/{editor,relationEditor,spatialEvents,episodeValidity}.test.ts`, `dev/seedScenario.test.ts`, `grounding/groundedExport.test.ts`, `companion/{companion,voiceClient}.test.ts`                                                                                    | `jsdom`                    |
 | Rendered component | `ui/*.test.tsx`                                                                                                                                                                                                                                                         | `jsdom`                    |
 
-The companion needs no network, no clock and no audio device to be tested: `createCompanion` takes an `ObserverClient`, a `VoiceClient` and a `Schedule`, so every branch of the loop — silence, voice off, observation off, interruption, anti-repetition, the text/voice handover — is driven through fakes. `renderEpisode` is tested from the client side even though it lives in `server/` (imported by relative path, since Vite's `@` alias doesn't cover it), because what the model is _told_ is as much a decision as what it is asked: a payload rendered as opaque shape ids still produces a fluent remark, just a meaningless one. The two routes themselves have no tests — what is left of them after the prompt is the SDK.
+The companion needs no network, no clock and no audio device to be tested: `createCompanion` takes an `ObserverClient`, a `VoiceClient` and a `Schedule`, so every branch of the loop — silence, voice off, observation off, interruption, anti-repetition, the text/voice handover — is driven through fakes. `renderEpisode` is tested from the client side even though it lives in `server/` (imported by relative path, since Vite's `@` alias doesn't cover it), because what the model is _told_ is as much a decision as what it is asked: a payload rendered as opaque shape ids still produces a fluent remark, just a meaningless one. The five routes themselves have no tests — what is left of them after the prompt is the SDK.
 
 The default environment is `node`; the DOM suites opt in with a `@vitest-environment jsdom` docblock. That keeps the pure layer honest: `src/domain`, `src/canvas/adapter` and `postItShape.ts` import tldraw for _types only_, and adding a runtime tldraw import to any of them will break it.
 

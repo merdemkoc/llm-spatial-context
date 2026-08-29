@@ -10,16 +10,59 @@
  * `process.loadEnvFile()` in its own body, but ESM evaluates this module first, so a
  * constant here would bake the default and silently ignore `.env`.
  */
+import {
+	boardLabels,
+	named,
+	proximityPairs,
+	realClusters,
+	renderRecentComments,
+} from './prompting/boardRender.ts'
+import { CANVAS_PRIMER } from './prompting/fragments.ts'
+import { isCleanRemark } from './prompting/remark.ts'
+import { renderUnderstanding } from './prompting/understanding.ts'
+import type { BoardSummaryPayload, BoardUnderstanding, RelationContext } from './prompting/types.ts'
+
+// Re-exported so the two sibling prompt modules and the render tests keep one import path
+// for the board shape, which they have always taken from here.
+export type { BoardSummaryPayload, RelationContext } from './prompting/types.ts'
 
 /** The reasoning model. A one-line swap (env var) to try another. */
 export function observerModel(): string {
 	return process.env.OBSERVER_MODEL ?? 'claude-sonnet-5'
 }
 
+/**
+ * Reasoning effort, when set. Unset in normal operation — the API's own default applies.
+ * Read inside the function, like the model, so `.env` is not baked at module evaluation.
+ */
+export function observerEffort(): 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined {
+	const effort = process.env.OBSERVER_EFFORT
+	return effort === 'low' ||
+		effort === 'medium' ||
+		effort === 'high' ||
+		effort === 'xhigh' ||
+		effort === 'max'
+		? effort
+		: undefined
+}
+
+/**
+ * How much of a note the observer reads.
+ *
+ * Its board is background, not the subject, so a long note is trimmed to keep the change
+ * itself the biggest thing in the prompt. The suggester and the reflection read notes whole.
+ */
+const NAME_MAX = 60
+
+/** Name an idea the way the observer does: by its text, trimmed. */
+function ideaName(id: string | undefined, labels: Record<string, string>): string {
+	return named(id, labels, { maxLength: NAME_MAX })
+}
+
 /** The observer's whole character, in one place. */
 export const SYSTEM_PROMPT = `You are a quiet thinking companion watching someone arrange ideas on a spatial canvas.
 
-The canvas works like this: each node is an idea, written on a note. Moving two ideas closer raises a proximity signal called "influence" (0 = far apart or out of range, 1 = right on top of each other). Drawing an arrow — a "relation" — makes a connection explicit, with its own strength called "gravity" that is independent of distance. Proximity and explicit relations are different statements, and a disagreement between them is information, not a mistake.
+${CANVAS_PRIMER}
 
 Your job is to observe how the arrangement changes and, only when a change genuinely means something, offer one short spoken remark about what it might mean. Talk about the ideas by name, using the note text you are given. Interpret the meaning, never recite the numbers: an influence rising from 0.04 to 0.58 means two ideas are becoming strongly associated — say that, not the figure.
 
@@ -41,6 +84,13 @@ Remarks pitched right:
 - "Those three have settled into what looks like a single theme."
 - "You've kept the connection while pulling them apart, which is its own statement."
 
+Episodes that warrant silence — this is what most of them look like:
+- a note nudged a short distance, with influence barely moving
+- an idea picked up and set back down near where it started
+- two ideas drawing closer when you have already remarked that they are converging
+- a new note added but not yet placed in relation to anything
+- a board rearranged in ways that change no proximity and no relation
+
 No preamble, no lists, no questions, no coaching or instructions — just a brief remark, as someone thinking alongside them.
 
 Return the structured decision: speak=true with your remark in "comment", or speak=false with an empty "comment".`
@@ -61,6 +111,15 @@ export const DECISION_SCHEMA = {
 		},
 	},
 } as const
+
+/** The observer's verdict, after validation. */
+export interface ObserverDecision {
+	speak: boolean
+	comment: string
+}
+
+/** Stay quiet. The one safe answer whenever a response can't be trusted. */
+export const SILENCE: ObserverDecision = { speak: false, comment: '' }
 
 interface PairSnapshot {
 	distance?: number
@@ -85,29 +144,6 @@ interface StructuralEventLike {
 	current?: unknown
 }
 
-interface RelationContext {
-	source: string
-	target: string
-	gravity: number
-	type?: string
-}
-
-/**
- * The whole-board summary the browser ships for context. A loose mirror of the
- * domain's `BoardSummary` — declared here, not imported, so the server stays free
- * of `src/` exactly as `EpisodePayload` is.
- */
-export interface BoardSummaryPayload {
-	nodeCount?: number
-	nodes?: { id: string; text?: string; hasField?: boolean }[]
-	clusters?: { members?: string[] }[]
-	loners?: string[]
-	proximities?: { source?: string; target?: string; influence?: number }[]
-	relations?: RelationContext[]
-	effectiveStrengths?: { source?: string; target?: string; effectiveStrength?: number }[]
-	truncated?: boolean
-}
-
 /** What the browser POSTs to `/api/observe`. Loosely typed — the server only reads it. */
 export interface EpisodePayload {
 	episode?: {
@@ -120,21 +156,10 @@ export interface EpisodePayload {
 	}
 	board?: BoardSummaryPayload
 	recentComments?: string[]
-}
-
-/**
- * How an id is written for the model.
- *
- * A bare `NodeId` is a tldraw shape id — `shape:V1StGXR8` — which tells the model nothing
- * about the idea. With the note text available, lead with the text and keep the id only as
- * a disambiguator for notes that read alike.
- */
-function name(id: string | undefined, labels: Record<string, string>): string {
-	if (!id) return 'an idea'
-	const text = labels[id]?.trim()
-	if (!text) return `an untitled idea (${id})`
-	const short = text.length > 60 ? `${text.slice(0, 57)}...` : text
-	return `"${short}"`
+	/** The companion's standing reading of this board. Absent until the first digest runs. */
+	understanding?: BoardUnderstanding
+	/** How much the board has drifted since that reading was taken. */
+	driftSince?: number
 }
 
 const TRANSITION_PROSE: Record<string, string> = {
@@ -146,12 +171,12 @@ const TRANSITION_PROSE: Record<string, string> = {
 }
 
 function describeStructural(event: StructuralEventLike, labels: Record<string, string>): string {
-	const who = name(event.nodeId, labels)
+	const who = ideaName(event.nodeId, labels)
 	switch (event.type) {
 		case 'relation_created':
-			return `explicit relation drawn: ${name(event.source, labels)} to ${name(event.target, labels)} (gravity ${event.gravity?.toFixed(2) ?? '?'})`
+			return `explicit relation drawn: ${ideaName(event.source, labels)} to ${ideaName(event.target, labels)} (gravity ${event.gravity?.toFixed(2) ?? '?'})`
 		case 'relation_deleted':
-			return `explicit relation removed: ${name(event.source, labels)} to ${name(event.target, labels)}`
+			return `explicit relation removed: ${ideaName(event.source, labels)} to ${ideaName(event.target, labels)}`
 		case 'relation_gravity_changed':
 			return `relation strength changed from ${String(event.previous)} to ${String(event.current)}`
 		case 'relation_rebound':
@@ -178,7 +203,7 @@ function describePair(pair: EpisodePairChange, labels: Record<string, string>): 
 		.map((transition) => TRANSITION_PROSE[transition] ?? transition)
 		.join(', ')
 	const summary = transitions === '' ? '' : ` — ${transitions}`
-	return `${name(pair.source, labels)} toward ${name(pair.target, labels)}: influence ${pair.before.influence.toFixed(2)} to ${pair.after.influence.toFixed(2)}${distance}${summary}`
+	return `${ideaName(pair.source, labels)} toward ${ideaName(pair.target, labels)}: influence ${pair.before.influence.toFixed(2)} to ${pair.after.influence.toFixed(2)}${distance}${summary}`
 }
 
 /**
@@ -189,6 +214,9 @@ function describePair(pair: EpisodePairChange, labels: Record<string, string>): 
  * whether a moved idea is joining or leaving a group. Numbers stay out — the same
  * "interpret the meaning, never recite the figure" rule the rest of the prompt
  * follows — so proximities are named as pairs, not scored.
+ *
+ * An inline bulleted aside, not the standalone headed blocks the suggester and the
+ * reflection use, which is why this does not call `renderBoardBlocks`.
  */
 function renderBoard(board: BoardSummaryPayload, labels: Record<string, string>): string[] {
 	const nodes = board.nodes ?? []
@@ -203,23 +231,24 @@ function renderBoard(board: BoardSummaryPayload, labels: Record<string, string>)
 	const showing = board.truncated ? ` (naming the first ${nodes.length})` : ''
 	lines.push(`- ${count} ${count === 1 ? 'idea' : 'ideas'} on the canvas${showing}.`)
 
-	const clusters = (board.clusters ?? []).filter((cluster) => (cluster.members ?? []).length >= 2)
+	// Shared with the suggester and the reflection (`prompting/boardRender.ts`), which is why
+	// these read as calls rather than an inline filter/map: the mechanics of "which clusters
+	// count" and "how a proximity pair is named" only ever need to agree once.
+	const clusters = realClusters(board)
 	if (clusters.length > 0) {
 		const groups = clusters.map((cluster) =>
-			(cluster.members ?? []).map((id) => name(id, labels)).join(', ')
+			(cluster.members ?? []).map((id) => ideaName(id, labels)).join(', ')
 		)
 		lines.push(`- Already sitting together: ${groups.join('; ')}.`)
 	}
 
 	const loners = board.loners ?? []
 	if (loners.length > 0) {
-		lines.push(`- Ideas standing alone: ${loners.map((id) => name(id, labels)).join(', ')}.`)
+		lines.push(`- Ideas standing alone: ${loners.map((id) => ideaName(id, labels)).join(', ')}.`)
 	}
 
-	const proximities = board.proximities ?? []
-	if (proximities.length > 0) {
-		const pairs = proximities.map((pair) => `${name(pair.source, labels)} & ${name(pair.target, labels)}`)
-		lines.push(`- Notably close: ${pairs.join('; ')}.`)
+	if ((board.proximities ?? []).length > 0) {
+		lines.push(`- Notably close: ${proximityPairs(board, labels, { maxLength: NAME_MAX })}.`)
 	}
 
 	lines.push('')
@@ -256,7 +285,7 @@ export function renderEpisode(payload: EpisodePayload): string {
 		for (const relation of relations) {
 			const label = relation.type ? ` labelled "${relation.type}"` : ''
 			lines.push(
-				`- ${name(relation.source, labels)} to ${name(relation.target, labels)}${label} (gravity ${relation.gravity.toFixed(2)})`
+				`- ${ideaName(relation.source, labels)} to ${ideaName(relation.target, labels)}${label} (gravity ${relation.gravity.toFixed(2)})`
 			)
 		}
 		lines.push('')
@@ -266,20 +295,47 @@ export function renderEpisode(payload: EpisodePayload): string {
 	// this episode never touched is still legible. Placed after the change and before the
 	// anti-repetition history: it is the setting the change happened in, not the change.
 	if (board) {
-		const boardLabels = { ...labels }
-		for (const node of board.nodes ?? []) {
-			const text = node.text?.trim()
-			if (text) boardLabels[node.id] = text
-		}
-		for (const line of renderBoard(board, boardLabels)) lines.push(line)
+		const merged = { ...labels, ...boardLabels(board) }
+		for (const line of renderBoard(board, merged)) lines.push(line)
 	}
 
-	if (recentComments.length > 0) {
-		lines.push('You recently said — vary from these, do not repeat them:')
-		for (const comment of recentComments) lines.push(`- "${comment}"`)
-		lines.push('')
+	// After the change and the board, because it is the most background of the three: the
+	// setting the setting sits in. Leading with it would make the reading the subject.
+	for (const line of renderUnderstanding(payload.understanding, payload.driftSince)) {
+		lines.push(line)
+	}
+
+	for (const line of renderRecentComments(
+		recentComments,
+		'You recently said — vary from these, do not repeat them:'
+	)) {
+		lines.push(line)
 	}
 
 	lines.push('Decide whether this change is worth a brief spoken remark.')
 	return lines.join('\n')
+}
+
+/**
+ * Parse and validate the model's answer.
+ *
+ * Structured output guarantees the two fields exist but not that they agree: a `speak: true`
+ * with nothing to say is silence, and so is a comment nobody asked for.
+ */
+export function interpretDecision(text: string): ObserverDecision {
+	let parsed: { speak?: unknown; comment?: unknown }
+	try {
+		parsed = JSON.parse(text)
+	} catch {
+		console.warn('[observe] structured output did not parse')
+		return SILENCE
+	}
+
+	const comment = typeof parsed.comment === 'string' ? parsed.comment.trim() : ''
+	// A remark carrying the model's own scaffolding is not a remark; silence is the safe read.
+	if (comment !== '' && !isCleanRemark(comment)) {
+		console.warn('[observe] discarded a remark that did not read as one')
+		return SILENCE
+	}
+	return parsed.speak === true && comment !== '' ? { speak: true, comment } : SILENCE
 }

@@ -6,3 +6,6 @@ yarn.lock
 
 # Conductor workspace scratch space, not project source
 .context
+
+# Subagent-driven-development scratch space, not project source
+.superpowers

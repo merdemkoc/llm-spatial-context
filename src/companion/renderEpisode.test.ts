@@ -11,7 +11,9 @@
  * is imported by relative path.
  */
 import { describe, expect, it } from 'vitest'
-import { renderEpisode } from '../../server/prompt.ts'
+import { interpretDecision, renderEpisode, SILENCE, SYSTEM_PROMPT } from '../../server/prompt.ts'
+import { isCleanRemark } from '../../server/prompting/remark.ts'
+import { renderUnderstanding } from '../../server/prompting/understanding.ts'
 
 describe('renderEpisode', () => {
 	it('names ideas by their note text rather than their ids', () => {
@@ -175,5 +177,191 @@ describe('renderEpisode', () => {
 		expect(rendered).toContain('"referral loop"')
 		expect(rendered).toContain('"trial length"')
 		expect(rendered).not.toContain('untitled idea')
+	})
+})
+
+describe('SYSTEM_PROMPT', () => {
+	it('explains the canvas, so influence and gravity are not bare words', () => {
+		expect(SYSTEM_PROMPT).toContain('"influence"')
+		expect(SYSTEM_PROMPT).toContain('"gravity"')
+	})
+
+	it('shows what silence looks like, not only what a good remark looks like', () => {
+		// The desired majority outcome had only prose arguing for it and three counter-examples
+		// arguing against; an all-positive exemplar list biases toward speaking.
+		expect(SYSTEM_PROMPT).toContain('Episodes that warrant silence')
+	})
+
+	it('no longer carries the understanding triage unconditionally', () => {
+		// The triage is data-shaped now (see `renderEpisode with a standing understanding`
+		// below): present only when an understanding is actually supplied. Baking it into the
+		// persona meant every episode was told to compare against a reading it might not have.
+		expect(SYSTEM_PROMPT).not.toContain('Judge what just happened against it')
+		expect(SYSTEM_PROMPT).not.toContain('never itself a reason to speak')
+	})
+})
+
+describe('interpretDecision', () => {
+	it('keeps a spoken remark, trimmed', () => {
+		expect(
+			interpretDecision(JSON.stringify({ speak: true, comment: '  Those two converged.  ' }))
+		).toEqual({
+			speak: true,
+			comment: 'Those two converged.',
+		})
+	})
+
+	it('treats speak=true with nothing to say as silence', () => {
+		expect(interpretDecision(JSON.stringify({ speak: true, comment: '   ' }))).toEqual(SILENCE)
+	})
+
+	it('treats a comment nobody asked for as silence', () => {
+		expect(interpretDecision(JSON.stringify({ speak: false, comment: 'unsolicited' }))).toEqual(
+			SILENCE
+		)
+	})
+
+	it('stays silent rather than throwing on unparseable output', () => {
+		expect(interpretDecision('not json')).toEqual(SILENCE)
+	})
+
+	// Structured output guarantees the JSON is well formed, not that the remark inside it is a
+	// remark. With thinking disabled the model's continuation was absorbed into this very
+	// field — schema-valid, and up to 1040 characters of it, on its way to the voice.
+	it('rejects a remark carrying leaked JSON punctuation', () => {
+		const leaked = 'Those two converged.}  Actually: {'
+		expect(interpretDecision(JSON.stringify({ speak: true, comment: leaked }))).toEqual(SILENCE)
+	})
+
+	it('rejects a remark that leaked the prompt back', () => {
+		const leaked = 'Those two converged.Another interaction episode just finished on the canvas.'
+		expect(interpretDecision(JSON.stringify({ speak: true, comment: leaked }))).toEqual(SILENCE)
+	})
+
+	it('rejects a remark far past any plausible length', () => {
+		const runaway = `${'a considered thought. '.repeat(40)}`
+		expect(interpretDecision(JSON.stringify({ speak: true, comment: runaway }))).toEqual(SILENCE)
+	})
+
+	it('still allows a remark that is merely a little long', () => {
+		// The 140-character target is a style rule the eval tracks, not a correctness gate;
+		// rejecting on it would throw away good remarks.
+		const slightlyLong = 'a'.repeat(180)
+		expect(interpretDecision(JSON.stringify({ speak: true, comment: slightlyLong }))).toEqual({
+			speak: true,
+			comment: slightlyLong,
+		})
+	})
+})
+
+describe('isCleanRemark', () => {
+	// Two real leaks pulled straight from an eval run: a well-formed sentence with a stray
+	// word glued on after its final full stop, no space. No brace, well under the length cap,
+	// so nothing else here caught either before the trailing-fragment rule was added.
+	it('rejects a remark trailing a triage word glued on with no space', () => {
+		const leaked =
+			"Pulling pricing away from SSO while the 'blocks' arrow stays put — the connection's now asserted despite the distance, worth noticing.contradicts"
+		expect(isCleanRemark(leaked)).toBe(false)
+	})
+
+	it('rejects a remark trailing a truncated word fragment', () => {
+		const leaked =
+			'That link finally bridges the two threads — pricing friction and onboarding friction may be the same stall in disguise.ed'
+		expect(isCleanRemark(leaked)).toBe(false)
+	})
+
+	it('accepts a clean remark ending in an ordinary sentence', () => {
+		const clean = "So pricing might not be the blocker at all — it's SSO underneath it."
+		expect(isCleanRemark(clean)).toBe(true)
+	})
+
+	// The original rule (`/[.!?][a-z]+$/`) also rejected this: a single lowercase letter after
+	// the stop is exactly what a legitimate abbreviation looks like, not just a leak. Both
+	// leaks above are two letters or more, so requiring `{2,}` still catches them and only
+	// widens the accepted case to a one-letter tail.
+	it('accepts a remark ending in an abbreviation rather than a leak', () => {
+		const clean = "They're wrapping up by 3p.m"
+		expect(isCleanRemark(clean)).toBe(true)
+	})
+})
+
+const understanding = {
+	themes: [{ name: 'Deal friction', meaning: 'What stalls enterprise deals', members: ['a', 'b'] }],
+	reading: 'A board about why deals stall.',
+	narrative: 'Started at pricing, kept returning to SSO.',
+	tensions: ['Nothing says whether onboarding causes churn or follows it.'],
+	derivedFromNodes: ['a', 'b'],
+}
+
+describe('renderEpisode with a standing understanding', () => {
+	it('states the themes, the reading, the narrative and the tensions', () => {
+		const rendered = renderEpisode({ episode: { structural: [], pairs: [] }, understanding })
+		expect(rendered).toContain('Deal friction')
+		expect(rendered).toContain('A board about why deals stall.')
+		expect(rendered).toContain('Started at pricing, kept returning to SSO.')
+		expect(rendered).toContain('Nothing says whether onboarding causes churn or follows it.')
+	})
+
+	it('says how stale the reading is, so the model can discount it', () => {
+		const rendered = renderEpisode({
+			episode: { structural: [], pairs: [] },
+			understanding,
+			driftSince: 8,
+		})
+		expect(rendered).toMatch(/8 changes ago/)
+	})
+
+	it('omits the section entirely when there is no understanding', () => {
+		const rendered = renderEpisode({ episode: { structural: [], pairs: [] } })
+		expect(rendered).not.toContain('understood this board to be')
+	})
+
+	// The undefined case above is what a fresh mount looks like; this is what a *resolved*
+	// digest that read nothing looks like — the exact shape the server's fail-safe 200 returns
+	// (see `server/index.ts` and `isBlankUnderstanding`). Both must render as no context at all,
+	// or a blank reading would still narrate itself into the prompt as "What you understood
+	// this board to be: (nothing)".
+	it('renders nothing for a present-but-entirely-empty understanding', () => {
+		expect(
+			renderUnderstanding(
+				{ themes: [], reading: '', narrative: '', tensions: [], derivedFromNodes: [] },
+				0
+			)
+		).toEqual([])
+	})
+
+	it('places the understanding after the change, so the change stays the subject', () => {
+		const rendered = renderEpisode({
+			episode: { structural: [{ type: 'node_moved', nodeId: 'a' }], pairs: [] },
+			context: { labels: { a: 'pricing is the blocker' }, relations: [] },
+			understanding,
+		})
+		expect(rendered.indexOf('What the user did')).toBeLessThan(rendered.indexOf('Deal friction'))
+	})
+
+	// The triage used to live unconditionally in SYSTEM_PROMPT, so an episode with no
+	// understanding at all was still told to judge the change against one — nothing to
+	// compare against, and it leaked into remarks on exactly those episodes. It now travels
+	// with the data instead, via `renderUnderstanding`, so these assert the rendered output
+	// rather than the static prompt string.
+	it('judges the change against the understanding, lowercase so there is no shouted token to echo', () => {
+		const rendered = renderEpisode({ episode: { structural: [], pairs: [] }, understanding })
+		expect(rendered).toContain('The change fits the understanding')
+		expect(rendered).toContain('The change extends it')
+		expect(rendered).toContain('The change contradicts it')
+		expect(rendered).not.toContain('FITS')
+		expect(rendered).not.toContain('EXTENDS')
+		expect(rendered).not.toContain('CONTRADICTS')
+	})
+
+	it('forbids narrating the understanding back', () => {
+		const rendered = renderEpisode({ episode: { structural: [], pairs: [] }, understanding })
+		expect(rendered).toContain('never itself a reason to speak')
+	})
+
+	it('gives no triage instruction at all when there is no understanding to judge against', () => {
+		const rendered = renderEpisode({ episode: { structural: [], pairs: [] } })
+		expect(rendered).not.toContain('never itself a reason to speak')
+		expect(rendered).not.toContain('Judge what just happened against it')
 	})
 })
