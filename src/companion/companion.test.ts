@@ -1854,7 +1854,7 @@ describe('the standing understanding', () => {
 		const timer = controllableSchedule()
 		const { observer } = fakeObserver()
 		const { voice } = fakeVoice()
-		const { client: digest } = fakeDigester()
+		const { client: digest, calls } = fakeDigester()
 		createCompanion({
 			minDwellMs: 0,
 			stream,
@@ -1872,7 +1872,10 @@ describe('the standing understanding', () => {
 		timer.flush()
 
 		// A digest speaks to nobody, so it must never take a speaking slot.
-		expect(companionQueue.get().some((thought) => thought.gesture.includes('digest'))).toBe(false)
+		// The derivation ran...
+		expect(calls).toHaveLength(1)
+		// ...and took no speaking slot: the queue holds only the episode's own thought.
+		expect(companionQueue.get()).toHaveLength(1)
 	})
 
 	it('keeps the previous understanding when a later derivation fails', async () => {

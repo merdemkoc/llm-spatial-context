@@ -1051,10 +1051,6 @@ export function createCompanion({
 			carried = events.slice(-EPISODE_BUFFER_LIMIT)
 		}
 
-		// Accumulated before the trivial gate below: a note created in an otherwise quiet
-		// episode still changes what the board is about, even if it says nothing worth speaking.
-		drift += driftOf(events)
-
 		if (!observationEnabled.get() || isTrivialEpisode(summary)) {
 			// Nothing is sent, so nothing is spent. A lone trivial episode is noise and is
 			// dropped as it always was — but once an arc is open, `events` is that whole arc,
@@ -1092,10 +1088,14 @@ export function createCompanion({
 		)
 		void think(thought)
 
-		// Free, local, and above the model call — the same shape as `isTrivialEpisode`.
-		const boardSummary = board?.()
-		if (digest && boardSummary && boardSummary.nodeCount >= 3 && drift >= DRIFT_THRESHOLD) {
-			void derive(boardSummary)
+		// Free, local, and above the model call — the same shape as `isTrivialEpisode`. Guarded
+		// on `digest` first, so a board read that nobody will use — `buildBoardSummary` walks
+		// every node, influence and relation — is never paid for without a digest client.
+		if (digest && drift >= DRIFT_THRESHOLD) {
+			const boardSummary = board?.()
+			if (boardSummary && boardSummary.nodeCount >= 3) {
+				void derive(boardSummary)
+			}
 		}
 	}
 
@@ -1232,6 +1232,16 @@ export function createCompanion({
 
 	const disposeRecorder = createEpisodeRecorder(stream, {
 		onEpisode: (summary, events) => {
+			// Counted here, over the newly-arrived `events` only, and before the carried merge
+			// below — not in `handleEpisode`, which is re-entered with events already counted
+			// once: the recorder re-folds a carried arc into `merged`, and `flushCarried` replays
+			// the same `carried` array from the pump's `finally`. Either would add the same
+			// event's weight again. Arriving here exactly once per event is what keeps the score
+			// honest, and this still sits above `handleEpisode`'s own trivial-episode gate, so
+			// the ordering the drift score depends on — free and local before the model call —
+			// is unchanged.
+			drift += driftOf(events)
+
 			// A carried arc rides along, re-folded with the new events as a single episode: what
 			// the observer receives is what it would have seen had the user never paused.
 			// Bounded like the recorder's own buffer, and with the same tradeoff — the slice
@@ -1294,6 +1304,8 @@ export function createCompanion({
 		groupingSuggestion.set(null)
 		ideaSuggestions.set([])
 		relationSuggestions.set([])
+		// So does the standing reading of it — a fresh mount should not open on a stale one.
+		boardUnderstanding.set(null)
 	}
 
 	return {
