@@ -906,7 +906,7 @@ export function createCompanion({
 		let reflection: Reflection | null = null
 		try {
 			reflection = await reflect.reflect(
-				{ board: boardSummary, persona },
+				{ board: boardSummary, persona, recentComments: recentComments() },
 				thought.controller.signal
 			)
 		} catch {
@@ -960,7 +960,7 @@ export function createCompanion({
 		let reflection: Reflection | null = null
 		try {
 			reflection = await reflect.reflect(
-				{ board: boardSummary, recentChange },
+				{ board: boardSummary, recentChange, recentComments: recentComments() },
 				thought.controller.signal
 			)
 		} catch {

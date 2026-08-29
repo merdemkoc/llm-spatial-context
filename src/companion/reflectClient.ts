@@ -42,6 +42,8 @@ export interface ReflectRequest {
 	recentChange?: string
 	/** Which persona/lens to reflect through (e.g. 'critique', 'gap-finder'). */
 	persona?: string
+	/** What the companion recently said, so a reading can vary from itself. */
+	recentComments?: string[]
 }
 
 export interface ReflectClient {

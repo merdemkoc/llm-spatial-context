@@ -11,7 +11,7 @@
  * is imported by relative path.
  */
 import { describe, expect, it } from 'vitest'
-import { renderEpisode } from '../../server/prompt.ts'
+import { interpretDecision, renderEpisode, SILENCE, SYSTEM_PROMPT } from '../../server/prompt.ts'
 
 describe('renderEpisode', () => {
 	it('names ideas by their note text rather than their ids', () => {
@@ -175,5 +175,71 @@ describe('renderEpisode', () => {
 		expect(rendered).toContain('"referral loop"')
 		expect(rendered).toContain('"trial length"')
 		expect(rendered).not.toContain('untitled idea')
+	})
+})
+
+describe('SYSTEM_PROMPT', () => {
+	it('explains the canvas, so influence and gravity are not bare words', () => {
+		expect(SYSTEM_PROMPT).toContain('"influence"')
+		expect(SYSTEM_PROMPT).toContain('"gravity"')
+	})
+
+	it('shows what silence looks like, not only what a good remark looks like', () => {
+		// The desired majority outcome had only prose arguing for it and three counter-examples
+		// arguing against; an all-positive exemplar list biases toward speaking.
+		expect(SYSTEM_PROMPT).toContain('Episodes that warrant silence')
+	})
+})
+
+describe('interpretDecision', () => {
+	it('keeps a spoken remark, trimmed', () => {
+		expect(
+			interpretDecision(JSON.stringify({ speak: true, comment: '  Those two converged.  ' }))
+		).toEqual({
+			speak: true,
+			comment: 'Those two converged.',
+		})
+	})
+
+	it('treats speak=true with nothing to say as silence', () => {
+		expect(interpretDecision(JSON.stringify({ speak: true, comment: '   ' }))).toEqual(SILENCE)
+	})
+
+	it('treats a comment nobody asked for as silence', () => {
+		expect(interpretDecision(JSON.stringify({ speak: false, comment: 'unsolicited' }))).toEqual(
+			SILENCE
+		)
+	})
+
+	it('stays silent rather than throwing on unparseable output', () => {
+		expect(interpretDecision('not json')).toEqual(SILENCE)
+	})
+
+	// Structured output guarantees the JSON is well formed, not that the remark inside it is a
+	// remark. With thinking disabled the model's continuation was absorbed into this very
+	// field — schema-valid, and up to 1040 characters of it, on its way to the voice.
+	it('rejects a remark carrying leaked JSON punctuation', () => {
+		const leaked = 'Those two converged.}  Actually: {'
+		expect(interpretDecision(JSON.stringify({ speak: true, comment: leaked }))).toEqual(SILENCE)
+	})
+
+	it('rejects a remark that leaked the prompt back', () => {
+		const leaked = 'Those two converged.Another interaction episode just finished on the canvas.'
+		expect(interpretDecision(JSON.stringify({ speak: true, comment: leaked }))).toEqual(SILENCE)
+	})
+
+	it('rejects a remark far past any plausible length', () => {
+		const runaway = `${'a considered thought. '.repeat(40)}`
+		expect(interpretDecision(JSON.stringify({ speak: true, comment: runaway }))).toEqual(SILENCE)
+	})
+
+	it('still allows a remark that is merely a little long', () => {
+		// The 140-character target is a style rule the eval tracks, not a correctness gate;
+		// rejecting on it would throw away good remarks.
+		const slightlyLong = 'a'.repeat(180)
+		expect(interpretDecision(JSON.stringify({ speak: true, comment: slightlyLong }))).toEqual({
+			speak: true,
+			comment: slightlyLong,
+		})
 	})
 })

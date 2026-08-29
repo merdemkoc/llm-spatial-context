@@ -20,5 +20,7 @@
 		"skipLibCheck": true,
 		"types": ["node"]
 	},
-	"include": ["server"]
+	// `evals` too: it is the other code path that spends money at a paid API, and it imports
+	// the server's own modules — the same reason this project exists at all.
+	"include": ["server", "evals"]
 }

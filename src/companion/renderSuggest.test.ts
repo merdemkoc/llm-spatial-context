@@ -11,7 +11,11 @@
  * imported by relative path, like `renderEpisode`.
  */
 import { describe, expect, it } from 'vitest'
-import { interpretGrouping, renderSuggestRequest } from '../../server/suggestPrompt.ts'
+import {
+	interpretGrouping,
+	renderSuggestRequest,
+	SUGGEST_SYSTEM_PROMPT,
+} from '../../server/suggestPrompt.ts'
 
 const board = {
 	nodeCount: 4,
@@ -65,8 +69,15 @@ describe('renderSuggestRequest', () => {
 	it('gives the model each note in full, not truncated', () => {
 		const longText =
 			'onboarding is where new teams either reach their first win or quietly churn away'
-		const longBoard = { ...board, nodes: [{ id: 'a', text: longText, hasField: true }, ...board.nodes.slice(1)] }
-		const rendered = renderSuggestRequest({ board: longBoard, trigger: 'demand', recentComments: [] })
+		const longBoard = {
+			...board,
+			nodes: [{ id: 'a', text: longText, hasField: true }, ...board.nodes.slice(1)],
+		}
+		const rendered = renderSuggestRequest({
+			board: longBoard,
+			trigger: 'demand',
+			recentComments: [],
+		})
 		expect(rendered).toContain(longText)
 	})
 
@@ -86,7 +97,11 @@ describe('interpretGrouping', () => {
 			board
 		)
 
-		expect(result).toEqual({ suggest: true, members: ['c', 'd'], comment: 'Both are growth loops.' })
+		expect(result).toEqual({
+			suggest: true,
+			members: ['c', 'd'],
+			comment: 'Both are growth loops.',
+		})
 	})
 
 	it('drops ids that are not on the board, declining if fewer than two survive', () => {
@@ -131,5 +146,14 @@ describe('interpretGrouping', () => {
 			members: [],
 			comment: '',
 		})
+	})
+})
+
+describe('SUGGEST_SYSTEM_PROMPT', () => {
+	it('explains proximity, which it is shown but was never told the meaning of', () => {
+		// `renderSuggestRequest` states which ideas are "notably close on the board"; without
+		// the primer the suggester read that signal with no idea what it measured.
+		expect(SUGGEST_SYSTEM_PROMPT).toContain('"influence"')
+		expect(SUGGEST_SYSTEM_PROMPT).toContain('"gravity"')
 	})
 })

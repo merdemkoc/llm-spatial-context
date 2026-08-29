@@ -12,10 +12,14 @@
  * relative path, like `renderEpisode`.
  */
 import { describe, expect, it } from 'vitest'
-import { interpretReflection, MAX_IDEAS, renderReflection } from '../../server/reflectPrompt.ts'
+import {
+	interpretReflection,
+	MAX_IDEAS,
+	REFLECT_PERSONAS,
+	renderReflection,
+} from '../../server/reflectPrompt.ts'
 
-const longText =
-	'onboarding is where new teams either get to their first win or quietly churn out'
+const longText = 'onboarding is where new teams either get to their first win or quietly churn out'
 
 const board = {
 	nodeCount: 4,
@@ -90,6 +94,38 @@ describe('renderReflection', () => {
 		const rendered = renderReflection({ board, persona: 'gap-finder' }).toLowerCase()
 		expect(rendered).toContain('connect')
 	})
+
+	it('reads a recent change through the impact lens, not a user-chosen one', () => {
+		const rendered = renderReflection({ board, recentChange: 'added 2 new ideas' })
+		// The lens is stated, like every other persona's — the change-comment used to have none.
+		expect(rendered).toContain(REFLECT_PERSONAS.impact.lens)
+		expect(rendered).toContain('What just happened: added 2 new ideas.')
+		expect(rendered).toContain(REFLECT_PERSONAS.impact.instruction!)
+	})
+
+	it('lets a chosen persona lose to the impact lens when a change is present', () => {
+		const rendered = renderReflection({
+			board,
+			persona: 'critique',
+			recentChange: 'drew 1 new connection',
+		})
+		expect(rendered).toContain(REFLECT_PERSONAS.impact.lens)
+		expect(rendered).not.toContain(REFLECT_PERSONAS.critique.lens)
+	})
+
+	it('passes recent comments through so a reading can vary from itself', () => {
+		const rendered = renderReflection({
+			board,
+			persona: 'critique',
+			recentComments: ['The board leans hard on onboarding.'],
+		})
+		expect(rendered).toContain('You recently said')
+		expect(rendered).toContain('The board leans hard on onboarding.')
+	})
+
+	it('omits the recent-comment block when there is no history', () => {
+		expect(renderReflection({ board })).not.toContain('You recently said')
+	})
 })
 
 describe('interpretReflection relations', () => {
@@ -163,31 +199,50 @@ describe('interpretReflection', () => {
 
 	it('defaults an unknown or missing kind to idea', () => {
 		const result = interpretReflection(
-			JSON.stringify({ comment: 'x', ideas: [{ text: 'a thought' }, { text: 'b', kind: 'nonsense' }] })
+			JSON.stringify({
+				comment: 'x',
+				ideas: [{ text: 'a thought' }, { text: 'b', kind: 'nonsense' }],
+			})
 		)
 		expect(result.ideas.map((i) => i.kind)).toEqual(['idea', 'idea'])
 	})
 
 	it('drops ideas with no text', () => {
 		const result = interpretReflection(
-			JSON.stringify({ comment: 'x', ideas: [{ text: '   ', kind: 'idea' }, { text: 'real', kind: 'idea' }] })
+			JSON.stringify({
+				comment: 'x',
+				ideas: [
+					{ text: '   ', kind: 'idea' },
+					{ text: 'real', kind: 'idea' },
+				],
+			})
 		)
 		expect(result.ideas).toEqual([{ text: 'real', kind: 'idea' }])
 	})
 
 	it('caps the number of ideas', () => {
-		const many = Array.from({ length: MAX_IDEAS + 4 }, (_, i) => ({ text: `idea ${i}`, kind: 'idea' }))
+		const many = Array.from({ length: MAX_IDEAS + 4 }, (_, i) => ({
+			text: `idea ${i}`,
+			kind: 'idea',
+		}))
 		const result = interpretReflection(JSON.stringify({ comment: 'x', ideas: many }))
 		expect(result.ideas).toHaveLength(MAX_IDEAS)
 	})
 
 	it('accepts a comment with no ideas', () => {
-		const result = interpretReflection(JSON.stringify({ comment: 'Just an observation.', ideas: [] }))
+		const result = interpretReflection(
+			JSON.stringify({ comment: 'Just an observation.', ideas: [] })
+		)
 		expect(result).toEqual({ comment: 'Just an observation.', ideas: [], focus: [], relations: [] })
 	})
 
 	it('declines rather than throwing on unparseable output', () => {
-		expect(interpretReflection('not json')).toEqual({ comment: '', ideas: [], focus: [], relations: [] })
+		expect(interpretReflection('not json')).toEqual({
+			comment: '',
+			ideas: [],
+			focus: [],
+			relations: [],
+		})
 	})
 
 	it('keeps focus ids that exist on the board, dropping and deduping the rest', () => {
