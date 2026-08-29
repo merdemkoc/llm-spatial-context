@@ -7,7 +7,7 @@
  * POST to the server that holds the API key. The reasoning, the prompt and the model live
  * server-side; the browser only ships the episode and receives the verdict.
  */
-import type { EpisodeSummary, NodeId } from '@/domain'
+import type { BoardSummary, EpisodeSummary, NodeId } from '@/domain'
 
 /** The model's verdict. `comment` is null when it chose to stay silent (`speak: false`). */
 export interface ObserverDecision {
@@ -42,6 +42,11 @@ export interface ObserveRequest {
 	episode: EpisodeSummary
 	context: EpisodeContext
 	recentComments: string[]
+	/**
+	 * The whole board as background, so a remark can tell whether a moved idea is joining or
+	 * leaving a cluster. Optional: the observer reads it if present and works without it.
+	 */
+	board?: BoardSummary
 }
 
 export interface ObserverClient {

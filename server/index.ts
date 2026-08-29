@@ -26,6 +26,8 @@ try {
 }
 
 const { observe } = await import('./observe.ts')
+const { suggest } = await import('./suggest.ts')
+const { reflect } = await import('./reflect.ts')
 const { synthesize } = await import('./speak.ts')
 
 const app = new Hono()
@@ -47,6 +49,28 @@ app.post('/api/observe', limit, async (c) => {
 		// Fail safe: a broken observation is silence, never a thrown error at the user.
 		// Inside the try alongside the parse, so a malformed body degrades the same way.
 		return c.json({ speak: false, comment: '' })
+	}
+})
+
+app.post('/api/suggest', limit, async (c) => {
+	try {
+		const payload = await c.req.json()
+		return c.json(await suggest(payload))
+	} catch (error) {
+		console.error('[suggest] failed:', error)
+		// Fail safe, like /api/observe: a broken suggestion is a decline, never a thrown error.
+		return c.json({ suggest: false, members: [], comment: '' })
+	}
+})
+
+app.post('/api/reflect', limit, async (c) => {
+	try {
+		const payload = await c.req.json()
+		return c.json(await reflect(payload))
+	} catch (error) {
+		console.error('[reflect] failed:', error)
+		// Fail safe, like the other routes: a broken reflection is an empty one.
+		return c.json({ comment: '', ideas: [] })
 	}
 })
 

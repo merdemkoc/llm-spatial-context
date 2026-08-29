@@ -32,6 +32,8 @@ Changes usually worth remarking on:
 
 Stay silent when nothing meaningful happened — a small nudge, a stray move, or a change you have already remarked on. Silence is the normal, correct outcome for most episodes; you are a companion, not a narrator. If you have recently said something similar, either stay silent or notice something genuinely new.
 
+You are also given a compact summary of the whole board — its clusters, the ideas standing alone, and which ideas are already close — as background. Use it only to place the current change in the surrounding shape: whether a moved idea is joining or leaving a cluster, or bridging two groups. It is context, not the subject. Do not summarize, list, or narrate the board, and do not remark on parts of it the current change did not touch. A board summary is never a reason to speak; silence is still the normal outcome.
+
 When you do speak: one sentence, or two at the most, and keep it under about 140 characters. Say what the arrangement now means, not what the user did to it — the move is the input you were handed, not the observation. Shorter is better.
 
 Remarks pitched right:
@@ -90,6 +92,22 @@ interface RelationContext {
 	type?: string
 }
 
+/**
+ * The whole-board summary the browser ships for context. A loose mirror of the
+ * domain's `BoardSummary` — declared here, not imported, so the server stays free
+ * of `src/` exactly as `EpisodePayload` is.
+ */
+export interface BoardSummaryPayload {
+	nodeCount?: number
+	nodes?: { id: string; text?: string; hasField?: boolean }[]
+	clusters?: { members?: string[] }[]
+	loners?: string[]
+	proximities?: { source?: string; target?: string; influence?: number }[]
+	relations?: RelationContext[]
+	effectiveStrengths?: { source?: string; target?: string; effectiveStrength?: number }[]
+	truncated?: boolean
+}
+
 /** What the browser POSTs to `/api/observe`. Loosely typed — the server only reads it. */
 export interface EpisodePayload {
 	episode?: {
@@ -100,6 +118,7 @@ export interface EpisodePayload {
 		labels?: Record<string, string>
 		relations?: RelationContext[]
 	}
+	board?: BoardSummaryPayload
 	recentComments?: string[]
 }
 
@@ -162,12 +181,58 @@ function describePair(pair: EpisodePairChange, labels: Record<string, string>): 
 	return `${name(pair.source, labels)} toward ${name(pair.target, labels)}: influence ${pair.before.influence.toFixed(2)} to ${pair.after.influence.toFixed(2)}${distance}${summary}`
 }
 
+/**
+ * The whole board, as background lines.
+ *
+ * Context, not the subject: it names which ideas already sit together, which stand
+ * alone, and which are notably close, so a remark about the change above can tell
+ * whether a moved idea is joining or leaving a group. Numbers stay out — the same
+ * "interpret the meaning, never recite the figure" rule the rest of the prompt
+ * follows — so proximities are named as pairs, not scored.
+ */
+function renderBoard(board: BoardSummaryPayload, labels: Record<string, string>): string[] {
+	const nodes = board.nodes ?? []
+	const count = board.nodeCount ?? nodes.length
+	// An empty board is no context worth stating; the change above stands alone.
+	if (count === 0) return []
+
+	const lines: string[] = [
+		'The board as a whole right now (context only — the change above is what you are remarking on):',
+	]
+
+	const showing = board.truncated ? ` (naming the first ${nodes.length})` : ''
+	lines.push(`- ${count} ${count === 1 ? 'idea' : 'ideas'} on the canvas${showing}.`)
+
+	const clusters = (board.clusters ?? []).filter((cluster) => (cluster.members ?? []).length >= 2)
+	if (clusters.length > 0) {
+		const groups = clusters.map((cluster) =>
+			(cluster.members ?? []).map((id) => name(id, labels)).join(', ')
+		)
+		lines.push(`- Already sitting together: ${groups.join('; ')}.`)
+	}
+
+	const loners = board.loners ?? []
+	if (loners.length > 0) {
+		lines.push(`- Ideas standing alone: ${loners.map((id) => name(id, labels)).join(', ')}.`)
+	}
+
+	const proximities = board.proximities ?? []
+	if (proximities.length > 0) {
+		const pairs = proximities.map((pair) => `${name(pair.source, labels)} & ${name(pair.target, labels)}`)
+		lines.push(`- Notably close: ${pairs.join('; ')}.`)
+	}
+
+	lines.push('')
+	return lines
+}
+
 /** Render one episode as the user message: readable lines the model can interpret. */
 export function renderEpisode(payload: EpisodePayload): string {
 	const structural = payload.episode?.structural ?? []
 	const pairs = payload.episode?.pairs ?? []
 	const labels = payload.context?.labels ?? {}
 	const relations = payload.context?.relations ?? []
+	const board = payload.board
 	const recentComments = payload.recentComments ?? []
 
 	const lines: string[] = ['An interaction episode just finished on the canvas.', '']
@@ -195,6 +260,18 @@ export function renderEpisode(payload: EpisodePayload): string {
 			)
 		}
 		lines.push('')
+	}
+
+	// The whole board, named from its own text merged over the episode labels, so an idea
+	// this episode never touched is still legible. Placed after the change and before the
+	// anti-repetition history: it is the setting the change happened in, not the change.
+	if (board) {
+		const boardLabels = { ...labels }
+		for (const node of board.nodes ?? []) {
+			const text = node.text?.trim()
+			if (text) boardLabels[node.id] = text
+		}
+		for (const line of renderBoard(board, boardLabels)) lines.push(line)
 	}
 
 	if (recentComments.length > 0) {

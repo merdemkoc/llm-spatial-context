@@ -44,3 +44,8 @@ export function shapeIdToRelationId(shapeId: TLShapeId | string): RelationId {
 export function createNodeId(): NodeId {
 	return crypto.randomUUID()
 }
+
+/** Mints a fresh RelationId — a bare UUID, the arrow shape id's stripped form. */
+export function createRelationId(): RelationId {
+	return crypto.randomUUID()
+}

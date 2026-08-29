@@ -117,4 +117,63 @@ describe('renderEpisode', () => {
 	it('renders an empty payload without throwing', () => {
 		expect(() => renderEpisode({})).not.toThrow()
 	})
+
+	// The whole-board summary is context, not the subject: it lets a remark know whether a
+	// moved idea is joining or leaving a cluster without the model having to reconstruct it.
+	it('states the whole board as background when a board summary is present', () => {
+		const rendered = renderEpisode({
+			episode: { structural: [], pairs: [] },
+			context: {
+				labels: { a: 'onboarding', b: 'activation email', c: 'cohort retention' },
+				relations: [],
+			},
+			board: {
+				nodeCount: 3,
+				nodes: [
+					{ id: 'a', text: 'onboarding', hasField: true },
+					{ id: 'b', text: 'activation email', hasField: true },
+					{ id: 'c', text: 'cohort retention', hasField: false },
+				],
+				clusters: [{ members: ['a', 'b'] }],
+				loners: ['c'],
+				proximities: [{ source: 'a', target: 'b', influence: 0.8 }],
+				relations: [],
+				effectiveStrengths: [],
+				truncated: false,
+			},
+			recentComments: [],
+		})
+
+		expect(rendered).toContain('The board as a whole')
+		expect(rendered).toContain('"onboarding"')
+		expect(rendered).toContain('standing alone')
+		expect(rendered).toContain('"cohort retention"')
+	})
+
+	// Board ideas are named from the board's own text, so a note the episode never touched
+	// (and so absent from the episode labels) is still legible.
+	it('names board ideas the episode never touched', () => {
+		const rendered = renderEpisode({
+			episode: { structural: [], pairs: [] },
+			context: { labels: {}, relations: [] },
+			board: {
+				nodeCount: 2,
+				nodes: [
+					{ id: 'x', text: 'referral loop', hasField: false },
+					{ id: 'y', text: 'trial length', hasField: false },
+				],
+				clusters: [],
+				loners: ['x', 'y'],
+				proximities: [],
+				relations: [],
+				effectiveStrengths: [],
+				truncated: false,
+			},
+			recentComments: [],
+		})
+
+		expect(rendered).toContain('"referral loop"')
+		expect(rendered).toContain('"trial length"')
+		expect(rendered).not.toContain('untitled idea')
+	})
 })

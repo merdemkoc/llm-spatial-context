@@ -41,6 +41,35 @@ export type {
 
 export type { Point, SpatialContext, SpatialInfluence } from '@/domain/spatialInfluence'
 
+export type {
+	BoardCluster,
+	BoardEffectivePair,
+	BoardNodeSummary,
+	BoardProximity,
+	BoardRelationSummary,
+	BoardSummary,
+} from '@/domain/boardSummary'
+
+export {
+	BOARD_NODE_LIMIT,
+	BOARD_PROXIMITY_LIMIT,
+	buildBoardSummary,
+	CLUSTER_INFLUENCE_THRESHOLD,
+} from '@/domain/boardSummary'
+
+export type { ClusterLayoutOptions, ClusterPlacement } from '@/domain/clusterLayout'
+
+export {
+	computeClusterLayout,
+	DEFAULT_CLUSTER_GAP,
+	DEFAULT_CLUSTER_ITERATIONS,
+	DEFAULT_CLUSTER_MARGIN,
+} from '@/domain/clusterLayout'
+
+export type { IdeaPlacementOptions } from '@/domain/ideaPlacement'
+
+export { DEFAULT_IDEA_GAP, placeNewNotes } from '@/domain/ideaPlacement'
+
 export {
 	buildSpatialContext,
 	calculateSpatialInfluence,

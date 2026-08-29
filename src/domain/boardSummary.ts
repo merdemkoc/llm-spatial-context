@@ -1,0 +1,214 @@
+/**
+ * The whole board, read as a compact summary.
+ *
+ * The observer and the grouping suggester both need to reason about the *whole*
+ * arrangement, not just the last change: which ideas already sit together, which
+ * stand alone, which are notably close. This is that reading — a pure fold over a
+ * `CanvasDocument` that recomputes nothing. `spatialContext` is already derived
+ * (and rounded) by `buildSpatialContext`; this only classifies and trims it.
+ *
+ * Deliberately coordinate-free. Positions are what *produced* the influences, so
+ * the summary encodes spatial reality as clusters and pairwise influence (0–1),
+ * never as raw x/y. A model reasons over "these two are close" far better than
+ * over two floats, and the client keeps the real coordinates for the geometry it
+ * does itself. It also keeps the summary small enough to ride along on every
+ * observe call.
+ *
+ * Pure, no tldraw.
+ */
+import type { CanvasDocument } from '@/domain/canvas'
+import type { CanvasNode, NodeId } from '@/domain/node'
+import { STRONG_PROXIMITY, WEAK_PROXIMITY } from '@/domain/events'
+
+/** How many ideas the summary names. Past this the board is trimmed and flagged. */
+export const BOARD_NODE_LIMIT = 60
+
+/** How many notable-closeness and effective-strength pairs to carry. */
+export const BOARD_PROXIMITY_LIMIT = 24
+
+/**
+ * The influence at which two ideas count as clustered. Reuses the event stream's
+ * "strong proximity" band so a cluster here means the same thing it does there.
+ */
+export const CLUSTER_INFLUENCE_THRESHOLD = STRONG_PROXIMITY
+
+/** One idea, resolved enough for a model to name it. */
+export interface BoardNodeSummary {
+	id: NodeId
+	text: string
+	/** Whether the idea's context reaches anywhere at all (a positive radius). */
+	hasField: boolean
+}
+
+/** A set of ideas already sitting together. Always two or more. */
+export interface BoardCluster {
+	members: NodeId[]
+}
+
+/** Two ideas that are notably close, undirected. */
+export interface BoardProximity {
+	source: NodeId
+	target: NodeId
+	influence: number
+}
+
+/** One explicit relation, projected to the summary's vocabulary. */
+export interface BoardRelationSummary {
+	source: NodeId
+	target: NodeId
+	gravity: number
+	type?: string
+}
+
+/** One connected pair and the combination of its two signals. */
+export interface BoardEffectivePair {
+	source: NodeId
+	target: NodeId
+	effectiveStrength: number
+}
+
+export interface BoardSummary {
+	nodeCount: number
+	/** Capped at `BOARD_NODE_LIMIT`; `truncated` says whether that bit. */
+	nodes: BoardNodeSummary[]
+	clusters: BoardCluster[]
+	/** Ideas in no cluster and touched by no relation. */
+	loners: NodeId[]
+	proximities: BoardProximity[]
+	relations: BoardRelationSummary[]
+	effectiveStrengths: BoardEffectivePair[]
+	truncated: boolean
+}
+
+function compareId(a: string, b: string): number {
+	return a < b ? -1 : a > b ? 1 : 0
+}
+
+/** A radius that reaches somewhere: present, finite and positive, as the influence maths reads it. */
+function hasReach(node: CanvasNode): boolean {
+	const radius = node.contextualField?.radius
+	return radius !== undefined && Number.isFinite(radius) && radius > 0
+}
+
+/**
+ * The undirected closeness of every kept pair, keyed on the sorted id pair.
+ *
+ * Influence is directional — it depends on the source's radius — so `a→b` and
+ * `b→a` can differ. Collapsing to the stronger of the two answers the question
+ * the summary actually asks: how close are these two, in either reading.
+ */
+function undirectedProximities(
+	influences: CanvasDocument['spatialContext']['influences'],
+	kept: Set<NodeId>
+): Map<string, BoardProximity> {
+	const strongest = new Map<string, BoardProximity>()
+	for (const inf of influences) {
+		if (!kept.has(inf.source) || !kept.has(inf.target)) continue
+		const [source, target] =
+			inf.source < inf.target ? [inf.source, inf.target] : [inf.target, inf.source]
+		const key = `${source}\u0000${target}`
+		const existing = strongest.get(key)
+		if (!existing || inf.influence > existing.influence) {
+			strongest.set(key, { source, target, influence: inf.influence })
+		}
+	}
+	return strongest
+}
+
+/** Connected components (size ≥ 2) over the pairs at or above the cluster threshold. */
+function buildClusters(strongest: Map<string, BoardProximity>): BoardCluster[] {
+	const adjacency = new Map<NodeId, Set<NodeId>>()
+	for (const pair of strongest.values()) {
+		if (pair.influence < CLUSTER_INFLUENCE_THRESHOLD) continue
+		if (!adjacency.has(pair.source)) adjacency.set(pair.source, new Set())
+		if (!adjacency.has(pair.target)) adjacency.set(pair.target, new Set())
+		adjacency.get(pair.source)!.add(pair.target)
+		adjacency.get(pair.target)!.add(pair.source)
+	}
+
+	const visited = new Set<NodeId>()
+	const clusters: BoardCluster[] = []
+	for (const start of adjacency.keys()) {
+		if (visited.has(start)) continue
+		const component: NodeId[] = []
+		const queue = [start]
+		visited.add(start)
+		while (queue.length > 0) {
+			const id = queue.shift()!
+			component.push(id)
+			for (const neighbour of adjacency.get(id) ?? []) {
+				if (!visited.has(neighbour)) {
+					visited.add(neighbour)
+					queue.push(neighbour)
+				}
+			}
+		}
+		if (component.length >= 2) clusters.push({ members: component.sort(compareId) })
+	}
+	return clusters.sort((a, b) => compareId(a.members[0], b.members[0]))
+}
+
+export function buildBoardSummary(canvas: CanvasDocument): BoardSummary {
+	const allNodes = Object.values(canvas.nodes)
+	const nodeCount = allNodes.length
+	const truncated = nodeCount > BOARD_NODE_LIMIT
+
+	// The ideas the summary speaks about. Past the cap, every other section is
+	// confined to this set, so any id in a cluster or a pair always has text to
+	// resolve it.
+	const kept = allNodes.slice(0, BOARD_NODE_LIMIT)
+	const keptIds = new Set(kept.map((node) => node.id))
+
+	const nodes: BoardNodeSummary[] = kept.map((node) => ({
+		id: node.id,
+		text: node.content.text?.trim() ?? '',
+		hasField: hasReach(node),
+	}))
+
+	const strongest = undirectedProximities(canvas.spatialContext.influences, keptIds)
+	const clusters = buildClusters(strongest)
+
+	const clustered = new Set(clusters.flatMap((cluster) => cluster.members))
+	const related = new Set<NodeId>()
+	for (const relation of Object.values(canvas.relations)) {
+		related.add(relation.from)
+		related.add(relation.to)
+	}
+	const loners = kept
+		.map((node) => node.id)
+		.filter((id) => !clustered.has(id) && !related.has(id))
+		.sort(compareId)
+
+	const proximities = [...strongest.values()]
+		.filter((pair) => pair.influence >= WEAK_PROXIMITY)
+		.sort(
+			(a, b) =>
+				b.influence - a.influence ||
+				compareId(a.source, b.source) ||
+				compareId(a.target, b.target)
+		)
+		.slice(0, BOARD_PROXIMITY_LIMIT)
+
+	const relations: BoardRelationSummary[] = Object.values(canvas.relations)
+		.filter((relation) => keptIds.has(relation.from) && keptIds.has(relation.to))
+		.map((relation) => ({
+			source: relation.from,
+			target: relation.to,
+			gravity: relation.gravity,
+			...(relation.type ? { type: relation.type } : {}),
+		}))
+		.sort((a, b) => compareId(a.source, b.source) || compareId(a.target, b.target))
+
+	const effectiveStrengths: BoardEffectivePair[] = canvas.spatialContext.effectiveStrengths
+		.filter((entry) => keptIds.has(entry.source) && keptIds.has(entry.target))
+		.slice()
+		.sort((a, b) => b.effectiveStrength - a.effectiveStrength)
+		.slice(0, BOARD_PROXIMITY_LIMIT)
+		.map((entry) => ({
+			source: entry.source,
+			target: entry.target,
+			effectiveStrength: entry.effectiveStrength,
+		}))
+
+	return { nodeCount, nodes, clusters, loners, proximities, relations, effectiveStrengths, truncated }
+}

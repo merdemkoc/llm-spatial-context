@@ -22,6 +22,7 @@ import {
 	PostItStrokeStyle,
 	PostItTextColorStyle,
 } from '@/canvas/shapes/postItStyles'
+import { postItBorder } from '@/canvas/shapes/postItAppearance'
 import { POST_IT_DEFAULT_HEIGHT, POST_IT_DEFAULT_VISUAL, POST_IT_DEFAULT_WIDTH } from '@/domain'
 
 const FONT_FAMILY = 'var(--tl-font-sans, sans-serif)'
@@ -79,8 +80,11 @@ export class PostItShapeUtil extends ShapeUtil<PostItShape> {
 	}
 
 	component(shape: PostItShape) {
-		const { id, type, props } = shape
+		const { id, type, props, meta } = shape
 		const isSelected = id === this.editor.getOnlySelectedShapeId()
+		// Provenance rides on the shape's meta (written by the adapter). An agent-authored note
+		// wears a heavier border in the agent ink, so it reads as AI-made at a glance.
+		const createdBy = typeof meta?.createdBy === 'string' ? meta.createdBy : undefined
 
 		return (
 			<HTMLContainer
@@ -88,7 +92,7 @@ export class PostItShapeUtil extends ShapeUtil<PostItShape> {
 					width: props.w,
 					height: props.h,
 					backgroundColor: props.fill,
-					border: `1px solid ${props.stroke}`,
+					border: postItBorder(createdBy, props.stroke),
 					borderRadius: 2,
 					boxShadow: '0 1px 4px rgba(0, 0, 0, 0.15)',
 					pointerEvents: 'all',
