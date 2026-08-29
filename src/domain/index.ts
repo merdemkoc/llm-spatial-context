@@ -100,7 +100,7 @@ export type {
 	RelationEndpoints,
 } from '@/domain/canvasDiff'
 
-export { diffCanvas } from '@/domain/canvasDiff'
+export { diffCanvas, roundPoint } from '@/domain/canvasDiff'
 
 export type { PairSnapshot, SpatialEvent } from '@/domain/events'
 
@@ -122,6 +122,7 @@ export {
 	createEpisodeRecorder,
 	EPISODE_BUFFER_LIMIT,
 	EPISODE_IDLE_MS,
+	episodeNodes,
 	isTrivialEpisode,
 	TRIVIAL_INFLUENCE_EPSILON,
 } from '@/domain/episode'

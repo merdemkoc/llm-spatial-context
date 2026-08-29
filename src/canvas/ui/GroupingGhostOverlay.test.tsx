@@ -81,7 +81,7 @@ function highlights() {
 }
 
 function propose(members: string[], targets: { id: string; x: number; y: number }[]) {
-	act(() => groupingSuggestion.set({ generation: 1, members, targets, rationale: 'grouped' }))
+	act(() => groupingSuggestion.set({ members, targets, rationale: 'grouped' }))
 }
 
 describe('GroupingGhostOverlay', () => {

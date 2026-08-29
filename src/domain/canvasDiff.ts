@@ -406,7 +406,15 @@ function byPair<T extends SpatialInfluence | EffectiveStrength>(
 	return index
 }
 
-function roundPoint(point: Point): Point {
+/**
+ * A node's position as this module reports it — the rounded centre, not `spatial.x/y`.
+ *
+ * Exported because a `node_moved` event carries the output of this function, so anyone asking
+ * later "has that note moved back?" has to ask in the same frame. Comparing against a raw
+ * `spatial.x/y` is a comparison between two different coordinate systems, and it fails
+ * quietly rather than loudly.
+ */
+export function roundPoint(point: Point): Point {
 	return { x: round(point.x, DISTANCE_PRECISION), y: round(point.y, DISTANCE_PRECISION) }
 }
 

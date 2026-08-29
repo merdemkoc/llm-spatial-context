@@ -39,7 +39,15 @@ export const companionStage = atom<CompanionStage>('companion stage', 'idle')
 export interface Pacing {
 	/** The quiet the canvas must hold before the next episode closes. */
 	idleMs: number
-	/** Thoughts killed by the user coming back before one could land. */
+	/**
+	 * Thoughts thrown away at the door — too late to be worth hearing, or about a change the
+	 * board no longer bears out.
+	 *
+	 * It used to count thoughts killed by the user coming back, which is no longer a thing
+	 * that happens: a thought now waits its turn in the queue instead of dying. Same readout,
+	 * same order of magnitude, different reason — worth saying, because "4 dropped" is only
+	 * legible if it is clear what dropped them.
+	 */
 	dropped: number
 }
 
@@ -73,6 +81,18 @@ export interface Utterance {
 }
 
 /**
+ * Whether the canvas follows the companion's attention.
+ *
+ * The third switch, and the most assertive thing the app can be given permission to do. The
+ * other two gate what the companion *says*; this one lets it move the board out from under you.
+ * That is a bigger claim on the user's attention than a sentence is — a remark can be ignored,
+ * a camera move cannot — so it is refusable in the same place and the same way as the rest.
+ *
+ * On by default: a remark about two notes you cannot see is a remark about nothing.
+ */
+export const followEnabled = atom('companion follow enabled', true)
+
+/**
  * What the companion is saying *as* it says it, or `null` between remarks.
  *
  * Separate from the transcript because the two answer different questions. The transcript
@@ -91,6 +111,38 @@ export const companionUtterance = atom<Utterance | null>('companion utterance', 
  */
 export const companionFocus = atom<NodeId[]>('companion focus', [])
 
+/** How far along one queued thought is — the three states a chip can show. */
+export type ThoughtState = 'thinking' | 'ready' | 'speaking'
+
+/**
+ * One thought as the chip row sees it.
+ *
+ * A projection, not the record. The orchestrator's own `QueuedThought` carries an
+ * `AbortController` and the raw events behind the gesture, and neither belongs in a render
+ * tree: React would hold a reference to a request it must not cancel, and a re-render would
+ * walk an array thousands of events long to decide nothing. Three fields is what a chip needs.
+ */
+export interface QueuedThoughtView {
+	id: number
+	/** What the user did, in a few words — `describeGesture`'s answer, computed once at enqueue. */
+	gesture: string
+	state: ThoughtState
+}
+
+/**
+ * The thoughts waiting to be spoken, oldest turn first.
+ *
+ * The companion used to hold one thought and throw it away when the user came back. It now
+ * holds several and speaks them in turn, which makes "what is it about to say" a list rather
+ * than a boolean — and a list nobody can see is a companion that appears to have gone quiet
+ * for no reason. Shown for the same reason `companionPacing` is: if the app derives something,
+ * the app should be willing to show it.
+ *
+ * The thought currently *speaking* is in here too, but the chip row leaves it out: it is
+ * already the `CompanionBar`, mid-sentence, with its words arriving as they are said.
+ */
+export const companionQueue = atom<QueuedThoughtView[]>('companion queue', [])
+
 /**
  * A grouping the companion is proposing right now — the ghost preview on the canvas,
  * awaiting accept or dismiss. `null` between proposals.
@@ -101,8 +153,6 @@ export const companionFocus = atom<NodeId[]>('companion focus', [])
  * fact about it. `targets` are world top-lefts, the same frame as `spatial.x/y`.
  */
 export interface GroupingSuggestion {
-	/** The orchestrator generation that produced it, so a stale ghost can be told apart. */
-	generation: number
 	members: NodeId[]
 	targets: ClusterPlacement[]
 	/** The one-line remark the companion spoke when proposing it; captions the ghost. */
@@ -125,6 +175,15 @@ export const requestGrouping = atom<((context: string) => void) | null>(
 	'companion request grouping',
 	null
 )
+
+/**
+ * Drop a queued thought before it is spoken — the × on a chip.
+ *
+ * The one control the queue needs that the atoms alone cannot provide: cancelling has to reach
+ * an `AbortController` the UI must never hold, so the orchestrator publishes the verb instead
+ * of the object. `null` while no companion is mounted, which is also the chips' disabled state.
+ */
+export const cancelThought = atom<((id: number) => void) | null>('companion cancel thought', null)
 export const acceptGrouping = atom<(() => void) | null>('companion accept grouping', null)
 
 /**
@@ -172,7 +231,10 @@ export const requestReflection = atom<((persona: string) => void) | null>(
 	'companion request reflection',
 	null
 )
-export const commitIdeas = atom<((ideaIds: string[]) => void) | null>('companion commit ideas', null)
+export const commitIdeas = atom<((ideaIds: string[]) => void) | null>(
+	'companion commit ideas',
+	null
+)
 export const commitRelations = atom<((relationIds: string[]) => void) | null>(
 	'companion commit relations',
 	null

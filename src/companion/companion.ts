@@ -1,7 +1,7 @@
 /**
- * The companion orchestrator — the MVP-2 loop, wired.
+ * The companion orchestrator — the loop, wired.
  *
- *   observe → detect meaningful change → think → comment → speak
+ *   observe → detect meaningful change → think → queue → speak
  *
  * It owns an `EpisodeRecorder` over the spatial event stream and, for each finalized
  * episode, runs the second stage of the significance model: the local gate
@@ -9,51 +9,52 @@
  * worth *asking* about — but the model still decides whether it is worth *speaking*
  * about. A silent verdict is a first-class outcome, not a failure.
  *
- * Three behaviours the spec asks for, made explicit here:
- *   - **Two switches.** `observationEnabled` gates the model call; `voiceEnabled` gates
- *     only playback. Off/off is silent, on/off fills the transcript without speaking.
- *   - **Interruption.** At most one observation is in flight. A new episode aborts the
- *     previous request — the canvas moved on, so its answer is stale — and a generation
- *     counter makes a late/ignored-abort response harmless.
- *   - **Anti-repetition.** The last few spoken comments ride along with each request so
- *     the model can vary its phrasing instead of narrating the same trend every pause.
+ * **The companion holds a queue, not a thought.** It used to hold one, and kill it the moment
+ * the user came back: an answer about a canvas that has moved on is worse than silence, so a
+ * gesture interrupted mid-thought produced nothing at all. That is a defensible bet and it was
+ * the wrong one. Keep arranging and the companion had nothing to say about any of it except
+ * the last thing you did. So the pipeline now behaves like a queue of tasks: every gesture
+ * gets a slot, the thinking happens in parallel, and the remarks are spoken one after another
+ * in the order the gestures happened. Watching it work through three things it noticed is more
+ * companionable than watching it forget two of them.
  *
- * **The pause is a guess, and it learns.** An episode closes after a fixed quiet, and
- * behind it sits ~4.7s of model call and synthesis during which the canvas is free to
- * change. So a pause mid-arrangement, read as the end of a gesture, produces an answer
- * about a canvas that no longer exists. Three things follow, and together they are most of
- * what this file does beyond the loop above:
- *   - **A thought dies when the user returns**, not when the next episode closes. Waiting
- *     for the next close meant a whole further pause in which a stale remark was free to
- *     arrive and be spoken over the gesture in progress.
- *   - **The killed gesture is carried forward.** Its events are re-folded into the next
- *     episode, so what the observer eventually receives is what it would have seen had the
- *     user never paused — the whole arc, not the part after the false ending.
- *   - **The pause moves.** A kill tells us exactly how much quiet was not enough, and
- *     `createIdleBackoff` turns that into the next pause. A remark that lands hands half of
- *     it back. Waiting longer therefore costs nothing in coverage, which is what makes the
- *     escalation safe.
+ * Four consequences, and together they are most of what this file does:
  *
- * A clip already speaking is the one thing renewed interaction does *not* stop: the remark
- * has been decided and is half-heard, and cutting a sentence off mid-word every time the
- * board is touched is worse than one that finishes a moment late. Because `speak` resolves
- * at playback start, aborting a thought lands on synthesis and can never reach sound. A
- * *newer remark* does stop the old clip — otherwise it talks on with nothing on screen.
+ *   - **The pump is the only thing that speaks.** Not a convention — a structural guarantee.
+ *     Observation, the proactive grouping, an on-demand reflection and the comment after an
+ *     accepted edit all *enqueue*; none of them touch `voice`. Two of those used to speak
+ *     directly, which under a queue means two clips talking over each other and a pump waiting
+ *     on a clip that was silently replaced.
+ *   - **A remark can still be dropped, but at the door rather than in flight.** Two rules, and
+ *     age comes first because it is the only one that cannot be wrong: a remark thirty seconds
+ *     behind the board is not worth hearing whatever it says. `isStillTrue` is the second, and
+ *     narrower — it catches the specific embarrassment of describing a gesture since undone.
+ *   - **Nothing interrupts a remark being spoken.** Cutting a sentence off mid-word was already
+ *     the thing this loop refused to do; with a queue it falls out for free, because the next
+ *     remark cannot start until the previous one reports that it is over.
+ *   - **The pause still learns, from a narrower signal.** `createIdleBackoff` existed to make
+ *     kills rarer, and nothing is killed now. But it is also the only thing throttling how many
+ *     paid observe calls a fidget costs, so it stays — retriggered by the one pair of
+ *     conditions that still means "the pause was too short": a thought dropped as no longer
+ *     true, *and* a user who came straight back after the pause fired. Either alone says
+ *     something else.
  *
  * **Text arrives with the voice.** Deciding what to say and synthesizing it are two waits,
  * a second or three each. Announcing the remark after the first one meant the user read it,
  * finished, and only then heard it read aloud — so the thinking hint stays up through
  * synthesis and the words are released as playback reports them (`companionUtterance`). The
- * transcript is still written before playback, because it is the record of what the
- * companion decided rather than a view of what it is currently saying: with voice off, or
- * when synthesis fails, the observation must survive either way.
+ * transcript is written as the remark takes the head, not when the model answered: a thought
+ * dropped at the door was never said, and one that appeared in the transcript would show up in
+ * the bar and in the next prompt's anti-repetition regardless.
  *
- * The clients and the timer are injected; nothing here reaches the network directly.
+ * The clients and the timers are injected; nothing here reaches the network directly.
  */
+import { react } from 'tldraw'
 import {
 	buildEpisodeSummary,
 	createEpisodeRecorder,
 	createIdleBackoff,
+	episodeNodes,
 	EPISODE_BUFFER_LIMIT,
 	EPISODE_IDLE_MS,
 	isTrivialEpisode,
@@ -70,8 +71,21 @@ import type { GroupingProposal, SuggestClient } from '@/companion/suggestClient'
 import type { IdeaProposal, ReflectClient, Reflection } from '@/companion/reflectClient'
 import type { VoiceClient } from '@/companion/voiceClient'
 import {
+	describeGesture,
+	insertByPriority,
+	isStillTrue,
+	HEAD_OF_LINE_MS,
+	MAX_REMARK_AGE_MS,
+	MIN_DWELL_MS,
+	QUEUE_LIMIT,
+	type EpisodeValidity,
+	type Priority,
+	type ThoughtState,
+} from '@/companion/thoughtQueue'
+import {
 	companionFocus,
 	companionPacing,
+	companionQueue,
 	companionStage,
 	companionTranscript,
 	companionUtterance,
@@ -100,6 +114,32 @@ export const PROACTIVE_COOLDOWN_MS = 60_000
 /** Small slack added to the self-edit window so scheduling jitter can't leak the move through. */
 const AGENT_EDIT_GRACE_MS = 250
 
+/**
+ * How soon after an episode closes a return counts as *straight* back.
+ *
+ * Half the resting pause. The pacing policy wants the case where the quiet it waited out was
+ * not the end of the gesture, and a user who resumes within this window plainly had not
+ * finished. A return a full second or more later is a new gesture, and a thought that goes
+ * stale because of one says nothing about how long the pause should have been.
+ */
+const PROMPT_RETURN_MS = 600
+
+/**
+ * The last resort behind a clip that never reports itself finished.
+ *
+ * `VoiceClient` makes `onEnd` total, so every ending anyone has thought of already arrives —
+ * this is for the ones nobody has. A stalled stream fires neither `ended` nor `error`, and the
+ * pump waits on exactly one promise, so the cost of being wrong here is a companion that never
+ * speaks again. Far above the longest possible clip (`MAX_SPEAK_CHARS` is 600 characters, about
+ * 37 seconds of speech) so it can only ever fire on something genuinely broken.
+ */
+const PLAYBACK_WATCHDOG_MS = 60_000
+
+const defaultDelay: Schedule = (fn, ms) => {
+	const id = setTimeout(fn, ms)
+	return () => clearTimeout(id)
+}
+
 /** A concrete grouping: the members to move and where. Mirrors the adapter's `GroupingPlan`. */
 export interface CompanionGroupingPlan {
 	members: NodeId[]
@@ -113,13 +153,23 @@ export interface CompanionOptions {
 	/** Timer for episode finalization; forwarded to the recorder. */
 	schedule?: Schedule
 	/**
+	 * Timer for the queue's own pacing — the minimum dwell and the playback watchdog.
+	 *
+	 * Separate from `schedule` because the two answer to different things and a test that
+	 * drives one should not be arming the other: `schedule` decides when a gesture is over,
+	 * this decides how fast the queue may drain.
+	 */
+	delay?: Schedule
+	/** The least time one remark occupies the queue. Defaults to `MIN_DWELL_MS`; 0 disables it. */
+	minDwellMs?: number
+	/**
 	 * The pause an episode *rests* at before finalizing. Defaults to `EPISODE_IDLE_MS`.
 	 *
 	 * Not the pause actually waited out: that is `createIdleBackoff`'s, which starts here,
 	 * rises when a gesture turns out to have been misread as finished, and returns here.
 	 */
 	idleMs?: number
-	/** Clock for transcript timestamps. Injected so tests are deterministic. */
+	/** Clock for transcript timestamps and queue ages. Injected so tests are deterministic. */
 	now?: () => number
 	/** Recent comments passed to the observer. Defaults to `DEFAULT_HISTORY_SIZE`. */
 	historySize?: number
@@ -137,6 +187,15 @@ export interface CompanionOptions {
 	 * adapter supplies it. Whole-board, not episode-specific, so it takes no argument.
 	 */
 	board?: () => BoardSummary
+	/**
+	 * The board as it stands now, in the terms one episode described it in — read just before
+	 * that episode's remark is spoken, so a gesture the user has since undone can be caught.
+	 *
+	 * Injected like `context`, and optional for the same reason a fake observer is: without it
+	 * the queue simply does not run the second drop rule. The age cap still applies, so an
+	 * un-injected companion is late-tolerant rather than unguarded.
+	 */
+	verify?: (summary: EpisodeSummary) => EpisodeValidity
 	/**
 	 * The grouping suggester. Optional: without it the companion only observes. Consulted
 	 * on demand, and proactively after a silent observation when the board warrants it.
@@ -195,43 +254,73 @@ export interface Companion {
 	commitIdeas: (ideaIds: string[]) => void
 	/** Commit the named ghost relations as agent-drawn arrows, and swallow the self-edit episode. */
 	commitRelations: (relationIds: string[]) => void
+	/** Drop a queued thought before it is spoken — the × on its chip. */
+	cancelThought: (id: number) => void
 }
 
 const EMPTY_CONTEXT: EpisodeContext = { labels: {}, relations: [] }
 
 /**
- * The thought in flight: what it was about, when it started, and how to call it off.
+ * One thing the companion has to say, from the moment its episode closed until it is spoken
+ * or dropped.
  *
- * It lives from the moment an episode closes until the remark reaches the user (or turns
- * out to be silence). For that whole span it is *killable*, and everything needed to kill
- * it well is here — the signal to abort, the events to carry forward, and the two numbers
- * that say how much quiet preceded it.
+ * Deliberately not a generation number. A single counter answers "is this the newest thought",
+ * which was the right question when there was only ever one; with several in flight the
+ * question is "is *this* thought still wanted", which is identity, not recency. The old
+ * counter would have discarded every answer but the last, which is the behaviour the queue
+ * exists to replace — while still paying for all of them.
  */
-interface PendingThought {
-	generation: number
-	controller: AbortController
-	/** The clock at episode close — the origin for measuring the quiet that fooled us. */
+interface QueuedThought {
+	/** Stable for the chip's React key and for cancelling by id. Monotonic within a mount. */
+	id: number
+	priority: Priority
+	state: ThoughtState
+	/** What the user did, in a few words — the chip's label, computed once at enqueue. */
+	gesture: string
+	/**
+	 * The fold the observer saw. `null` for a thought with no episode behind it: a reflection
+	 * is about the whole board, and there is nothing in an episode that could contradict it.
+	 */
+	summary: EpisodeSummary | null
+	/** The events behind it, so a dropped thought's gesture is not lost. */
+	events: SpatialEvent[]
+	/** The notes the remark is about — highlighted on the canvas while it is spoken. */
+	focus: NodeId[]
+	/** The clock at episode close: the age the pump refuses to speak past. */
 	closedAt: number
 	/** The pause the recorder had actually waited out to close that episode. */
 	idleAtClose: number
-	/** The events behind it, kept so killing it does not lose the gesture's starting point. */
-	events: SpatialEvent[]
+	/** When the user first came back after it closed. `null` while they have not. */
+	returnedAt: number | null
+	/** Calls off the model. Aborted by cancel and teardown; never by the user touching the canvas. */
+	controller: AbortController
+	/** The sentence, once the model has decided on one. `null` while thinking. */
+	comment: string | null
+	/**
+	 * The side effect that must land with the voice, if any — putting a grouping ghost or a set
+	 * of idea ghosts on the canvas. Run as the thought takes the head, so the preview is on
+	 * screen as the rationale is spoken rather than a beat before it.
+	 */
+	stage?: () => void
 }
 
 /**
- * Start the companion over a stream. Returns a disposer that stops the recorder and
- * aborts any in-flight observation — collect it with the other `handleMount` disposers.
+ * Start the companion over a stream. Returns a disposer that stops the recorder, drains the
+ * queue and aborts every request in it — collect it with the other `handleMount` disposers.
  */
 export function createCompanion({
 	stream,
 	observer,
 	voice,
 	schedule,
+	delay = defaultDelay,
+	minDwellMs = MIN_DWELL_MS,
 	idleMs,
 	now = Date.now,
 	historySize = DEFAULT_HISTORY_SIZE,
 	context,
 	board,
+	verify,
 	suggest,
 	planGrouping,
 	applyGrouping,
@@ -241,25 +330,47 @@ export function createCompanion({
 	createAgentNotes,
 	createAgentRelations,
 }: CompanionOptions): Companion {
-	let pending: PendingThought | null = null
-	let inFlight: AbortController | null = null
-	// Bumped per episode and per suggestion, and again whenever a thought is killed. A
-	// response whose generation is stale (its episode or request was superseded) is ignored
-	// even if the client ignored the abort.
-	let generation = 0
+	/** Oldest turn first. The head is the only thought that may speak. */
+	let queue: QueuedThought[] = []
+	let nextId = 1
+	/** The pump's mutual exclusion: exactly one remark is being spoken at a time. */
+	let pumping = false
+	/**
+	 * Who owns the utterance atoms.
+	 *
+	 * All that survives of the old generation counter, doing the one job it was actually right
+	 * for. Bumped as each remark takes the voice, so a stale clip's progress callback cannot
+	 * overwrite the sentence that replaced it.
+	 */
+	let speechGeneration = 0
 	let disposed = false
 	// When set to a future time, episodes finalizing before it are the companion's own
 	// grouping move and are skipped rather than narrated.
 	let agentEditUntil = 0
 	// When the last proactive proposal was made, for the cooldown between them.
 	let lastProactiveAt = 0
+	/** The in-flight request of whichever direct thought is thinking, so a newer one supersedes it. */
+	let inFlight: AbortController | null = null
+	/** Cancels the pump's own wake-up, when it is waiting on nothing but the clock. */
+	let cancelWake: (() => void) | null = null
 
 	const shouldPropose =
 		shouldProposeGrouping ?? ((_summary, at) => at - lastProactiveAt >= PROACTIVE_COOLDOWN_MS)
 
-	/** A killed thought's events, waiting to be folded into the next episode. */
+	/**
+	 * An arc the queue could not take yet, waiting to be folded into the next thought.
+	 *
+	 * Three things put events here and they are the same thing wearing different hats: an
+	 * episode too trivial to send on its own while an arc is already open, a gesture made while
+	 * a proposal is waiting to be decided, and a gesture that arrived with the queue full.
+	 * In every case the events are not lost — they ride along with the next episode and are
+	 * re-folded, so the observer sees the whole arc rather than the fragment after the pause.
+	 *
+	 * Owned by whoever consumes it and nobody else. It used to be cleared in `settle`, which is
+	 * per-thought now: one remark finishing would have wiped an arc belonging to a later one.
+	 */
 	let carried: SpatialEvent[] = []
-	/** Thoughts the user came back too soon for. Reported, not acted on. */
+	/** Thoughts thrown away at the door. Reported, not acted on. */
 	let dropped = 0
 
 	const backoff = createIdleBackoff({ baseMs: idleMs })
@@ -282,52 +393,83 @@ export function createCompanion({
 		companionPacing.set({ idleMs: backoff.currentMs(), dropped })
 	}
 
+	/** A proposal is on the canvas awaiting a decision; the companion never talks over one. */
+	const proposalPending = () =>
+		groupingSuggestion.get() !== null ||
+		ideaSuggestions.get().length > 0 ||
+		relationSuggestions.get().length > 0
+
 	/**
-	 * This thought is over and nothing interrupted it — it reached the user, it had nothing
-	 * to say, or it failed on its own. Either way the quiet it waited out was long enough,
-	 * so the policy hands back half of whatever penalty it is carrying, and the events are
-	 * spent: they have been shown to the observer.
+	 * Mirror the queue for the chip row, and derive the thinking hint from the head.
+	 *
+	 * The hint has to come from the head alone, not from the queue as a whole. `CompanionBar`
+	 * hides the remark whenever the stage is anything but idle, so a second thought thinking in
+	 * the background would blank the sentence being spoken in the foreground — the word-by-word
+	 * reveal would vanish exactly when the queue is deep enough to be interesting. Background
+	 * work belongs on the chips; the hint is about the thing you are waiting to hear.
+	 */
+	const publishQueue = () => {
+		companionQueue.set(
+			queue.map((thought) => ({ id: thought.id, gesture: thought.gesture, state: thought.state }))
+		)
+		const head = queue[0]
+		// While the head speaks, `utter` owns the stage: 'composing' through synthesis, then
+		// 'idle' as the voice comes up so the bar can start showing words.
+		if (head?.state === 'speaking') return
+		// Only a head actually waiting on the model earns the hint. A head that has its sentence
+		// and is merely held — behind a ghost awaiting a decision — is not working, and a hint
+		// that says it is turns "nothing is happening" into a claim that something is.
+		companionStage.set(head?.state === 'thinking' ? 'observing' : 'idle')
+	}
+
+	const remove = (thought: QueuedThought) => {
+		queue = queue.filter((held) => held !== thought)
+	}
+
+	/**
+	 * A thought reached its end and nothing cut it short — it was spoken, or it had nothing to
+	 * say. Either way the quiet it waited out was long enough, so the policy hands back half of
+	 * whatever penalty it is carrying.
 	 */
 	const settle = () => {
-		pending = null
-		carried = []
 		backoff.settled()
 		publishPacing()
-		companionStage.set('idle')
 	}
 
 	/**
 	 * The user is back.
 	 *
-	 * Whatever is in flight is now an answer about a canvas that has changed, so it is
-	 * called off rather than left to arrive and be spoken over the gesture in progress. A
-	 * clip already playing has no `pending` behind it and is deliberately left alone.
+	 * It used to kill whatever was in flight. It now only writes down when the return happened,
+	 * because that timestamp is half of the one signal the pacing policy still learns from — the
+	 * other half being whether the thought later turned out to be about a board that had moved
+	 * on. A return on its own means nothing: users come back to a canvas all the time and most
+	 * remarks survive it.
 	 */
 	const handleActivity = () => {
-		const killed = pending
-		if (!killed) return
-
-		generation += 1
-		pending = null
-		killed.controller.abort()
-
-		// The quiet that fooled us, measured rather than guessed: what the recorder waited
-		// out, plus how long the user stayed away after it fired. A pause past that would
-		// not have closed the episode where this one closed.
-		backoff.interrupted(killed.idleAtClose + (now() - killed.closedAt))
-		dropped += 1
-		// Not lost: this holds the gesture's `before`.
-		carried = killed.events
-
-		publishPacing()
-		companionStage.set('idle')
+		if (queue.length === 0) return
+		const at = now()
+		for (const thought of queue) {
+			if (thought.returnedAt === null) thought.returnedAt = at
+		}
 	}
 
+	/**
+	 * Recent comments for anti-repetition, from the transcript *and* the queue.
+	 *
+	 * The transcript alone is not enough once thoughts think in parallel: it is written as a
+	 * remark takes the voice, so two requests a second apart would both be told the same last
+	 * three things and could easily arrive at the same fourth. The queue holds what has been
+	 * decided but not yet said, which is exactly the gap. Sliced once over the concatenation
+	 * rather than once per source, so a full queue doesn't quietly change the prompt's shape.
+	 */
 	const recentComments = () =>
-		companionTranscript
-			.get()
-			.slice(-historySize)
-			.map((entry) => entry.comment)
+		[
+			...companionTranscript.get().map((entry) => entry.comment),
+			// The speaking one has already been recorded; including it would say it twice.
+			...queue
+				.filter((thought) => thought.comment !== null && thought.state !== 'speaking')
+				.map((thought) => thought.comment!),
+		].slice(-historySize)
 
 	const record = (comment: string) => {
 		const next = [...companionTranscript.get(), { comment, at: now() }]
@@ -335,238 +477,314 @@ export function createCompanion({
 	}
 
 	/**
-	 * The shared second half of both an observation and a grouping: a sentence exists, now
-	 * render a voice for it and release the words as playback reports them. Owns the stage and
-	 * the utterance for its generation only, so a newer thought taking over is never overwritten.
+	 * This thought will not be spoken.
+	 *
+	 * Two reasons reach here and only one of them teaches the pause anything. A thought dropped
+	 * as no longer true, by a user who came straight back after the pause fired, is the pause
+	 * having been too short — that is the pair of conditions, and neither half means it alone.
+	 * A thought dropped for being late says the queue was deep; a stale one the user wandered
+	 * back to a minute later says the board moved on. Both are real, neither is about timing.
 	 */
-	const speakComment = async (
-		comment: string,
-		mine: number,
-		focus: NodeId[] = [],
-		{ signal, onLand }: { signal?: AbortSignal; onLand?: () => void } = {}
-	) => {
-		const owns = () => mine === generation && !disposed
-		// How a landed remark ends. An observation passes `settle`, so reaching the user
-		// vindicates the pause and the thought stops being killable; a grouping or reflection
-		// has no pending thought behind it and just drops the thinking hint.
-		const land = onLand ?? (() => companionStage.set('idle'))
-		if (!voiceEnabled.get()) {
-			// Nothing to wait for, so the remark is the whole remark, immediately. Nothing is being
-			// spoken, so there is nothing to highlight either.
-			land()
-			return
+	const drop = (thought: QueuedThought, reason: 'late' | 'stale') => {
+		thought.controller.abort()
+		remove(thought)
+		dropped += 1
+
+		const returnedPromptly =
+			thought.returnedAt !== null && thought.returnedAt - thought.closedAt <= PROMPT_RETURN_MS
+		if (reason === 'stale' && returnedPromptly) {
+			// The quiet that fooled us, measured rather than guessed: what the recorder waited
+			// out, plus how long the user stayed away after it fired.
+			backoff.interrupted(thought.idleAtClose + (thought.returnedAt! - thought.closedAt))
 		}
 
-		companionStage.set('composing')
-		try {
-			await voice.speak(comment, {
-				...(signal ? { signal } : {}),
-				onStart: () => {
-					if (!owns()) return
-					// The hint comes down exactly as the voice comes up: one hands over to the
-					// other, so there is never a silent sentence sitting on screen. The notes the
-					// remark is about light up for as long as it is spoken.
-					land()
-					companionUtterance.set({ comment, fraction: 0 })
-					companionFocus.set(focus)
-				},
-				onProgress: (fraction) => {
-					if (!owns()) return
-					// Done speaking: drop the utterance so the bar falls back to the transcript's
-					// newest entry, and let the highlight go.
-					if (fraction >= 1) {
+		publishPacing()
+		publishQueue()
+	}
+
+	/**
+	 * Is this still worth saying, at the last moment saying nothing is free?
+	 *
+	 * Age first, because it is the only rule that cannot be wrong. Nothing records what the
+	 * remark actually asserted — it is free text — so `isStillTrue` reads the *episode* as a
+	 * proxy, and the proxy is blind to a remark about the board as a whole or one that varied
+	 * its phrasing away from the change that prompted it. Age catches all of those. A direct
+	 * request skips both: the user asked for it, and a reflection is about a board rather than
+	 * about a gesture that could be undone.
+	 */
+	const stillWorthSaying = (thought: QueuedThought): boolean => {
+		if (thought.priority === 'direct') return true
+		if (now() - thought.closedAt > MAX_REMARK_AGE_MS) return false
+		if (!verify || !thought.summary) return true
+		return isStillTrue(thought.summary, verify(thought.summary))
+	}
+
+	/**
+	 * Speak one remark and resolve when it is over — however it ends.
+	 *
+	 * This await is the only thing pacing the queue, so a promise that can fail to settle is a
+	 * queue that can fail to drain. `VoiceClient` makes `onEnd` total for exactly that reason,
+	 * and the watchdog covers the endings nobody has thought of yet.
+	 *
+	 * The dwell is the other half. With voice off — or with synthesis failing — speaking costs
+	 * nothing and returns at once, so without a floor the pump would empty a full queue inside
+	 * one tick: four transcript entries in a single frame, and slots freeing so fast that
+	 * nothing throttles the observe rate behind them.
+	 */
+	const utter = (thought: QueuedThought) =>
+		new Promise<void>((resolve) => {
+			speechGeneration += 1
+			const mine = speechGeneration
+			const owns = () => mine === speechGeneration && !disposed
+
+			const comment = thought.comment ?? ''
+			let settled = false
+			let over = false
+			let dwelt = minDwellMs <= 0
+			let cancelWatchdog: (() => void) | null = null
+
+			const finish = () => {
+				if (settled || !over || !dwelt) return
+				settled = true
+				cancelWatchdog?.()
+				resolve()
+			}
+			const ended = () => {
+				over = true
+				finish()
+			}
+
+			if (!dwelt) {
+				delay(() => {
+					dwelt = true
+					finish()
+				}, minDwellMs)
+			}
+
+			if (!voiceEnabled.get()) {
+				// Nothing to wait for, so the remark is the whole remark, immediately. Nothing is
+				// being spoken, so there is nothing to highlight either.
+				companionStage.set('idle')
+				ended()
+				return
+			}
+
+			companionStage.set('composing')
+			void voice
+				.speak(comment, {
+					signal: thought.controller.signal,
+					onStart: () => {
+						if (!owns()) return
+						// The hint comes down exactly as the voice comes up: one hands over to the
+						// other, so there is never a silent sentence sitting on screen. The notes the
+						// remark is about light up for as long as it is spoken.
+						companionStage.set('idle')
+						companionUtterance.set({ comment, fraction: 0 })
+						companionFocus.set(thought.focus)
+						cancelWatchdog = delay(ended, PLAYBACK_WATCHDOG_MS)
+					},
+					onProgress: (fraction) => {
+						if (!owns()) return
+						if (fraction >= 1) {
+							companionUtterance.set(null)
+							companionFocus.set([])
+						} else {
+							companionUtterance.set({ comment, fraction })
+						}
+					},
+					onEnd: () => {
+						if (owns()) {
+							companionStage.set('idle')
+							companionUtterance.set(null)
+							companionFocus.set([])
+						}
+						ended()
+					},
+				})
+				.catch(() => {
+					// A blocked or failed playback shouldn't take down the loop — and it must not
+					// leave the remark hidden behind a thinking hint that will never clear either.
+					// `onEnd` has already reported the ending; the client makes that total.
+					if (owns()) {
+						companionStage.set('idle')
 						companionUtterance.set(null)
 						companionFocus.set([])
-					} else {
-						companionUtterance.set({ comment, fraction })
 					}
-				},
-			})
-		} catch {
-			// A blocked or failed playback shouldn't take down the loop — but it must not leave
-			// the remark hidden behind a thinking hint that will never clear either.
-			if (owns()) {
-				land()
-				companionUtterance.set(null)
-				companionFocus.set([])
-			}
-		}
-	}
-
-	/** The notes an episode touched — what an observation reacts to, and so what it highlights. */
-	const episodeFocus = (summary: EpisodeSummary): NodeId[] => {
-		const ids = new Set<NodeId>()
-		for (const event of summary.structural) {
-			const { nodeId, source, target } = event as {
-				nodeId?: NodeId
-				source?: NodeId
-				target?: NodeId
-			}
-			if (nodeId) ids.add(nodeId)
-			if (source) ids.add(source)
-			if (target) ids.add(target)
-		}
-		for (const pair of summary.pairs) {
-			ids.add(pair.source)
-			ids.add(pair.target)
-		}
-		return [...ids]
-	}
-
-	/**
-	 * Ask the suggester for a grouping and, if one comes back, put its ghost on the canvas and
-	 * speak the rationale. Shares the generation/in-flight discipline with observation, so a
-	 * newer episode aborts it and a stale answer is dropped.
-	 */
-	const runSuggestion = async (
-		trigger: 'demand' | 'proactive',
-		boardSummary: BoardSummary | undefined,
-		intent?: string
-	) => {
-		if (!suggest || !planGrouping || !boardSummary) return
-
-		generation += 1
-		const mine = generation
-		inFlight?.abort()
-		const controller = new AbortController()
-		inFlight = controller
-		companionStage.set('observing')
-		companionUtterance.set(null)
-		companionFocus.set([])
-		// Count the cooldown from the attempt, not just a success, so repeated declines on a
-		// quiet canvas can't hammer the API.
-		if (trigger === 'proactive') lastProactiveAt = now()
-
-		let proposal: GroupingProposal | null = null
-		try {
-			proposal = await suggest.suggest(
-				{ board: boardSummary, trigger, recentComments: recentComments(), intent },
-				controller.signal
-			)
-		} catch {
-			// Aborted by a newer episode, or the request failed — either way, no proposal.
-		}
-
-		if (mine !== generation || disposed) return
-		inFlight = null
-
-		const plan =
-			proposal && proposal.members.length >= 2 && proposal.rationale
-				? planGrouping(proposal.members)
-				: null
-		if (!plan) {
-			companionStage.set('idle')
-			return
-		}
-
-		// The ghost first, so the preview is on screen as the rationale is spoken; then the
-		// transcript, then the voice — the same order and reasons as an observation.
-		groupingSuggestion.set({
-			generation: mine,
-			members: plan.members,
-			targets: plan.targets,
-			rationale: proposal!.rationale,
+				})
 		})
-		record(proposal!.rationale)
-		await speakComment(proposal!.rationale, mine, plan.members)
+
+	/**
+	 * The one place a remark becomes sound.
+	 *
+	 * A single loop, and the single owner of `voice`, because both of the queue's promises are
+	 * statements about a sequence: remarks are heard in the order the gestures happened, and
+	 * exactly one is heard at a time. Anything able to speak without coming through here breaks
+	 * both, which is why the proactive grouping and the on-demand reflection are queue items
+	 * that jump the line rather than speakers that talk beside it.
+	 *
+	 * Called from everywhere a thought might have become speakable — an answer arriving, a
+	 * cancel, a clip ending, a proposal decided — and every call but the first returns at once.
+	 */
+	const pump = async (): Promise<void> => {
+		if (pumping || disposed) return
+		pumping = true
+		try {
+			for (;;) {
+				const head = queue[0]
+				if (!head || head.state === 'speaking') break
+
+				if (head.state === 'thinking') {
+					// A slow head only costs anything while something behind it is ready and going
+					// stale, so that is the only case this deadline applies to — a lone thought
+					// keeps the observer's own twenty-second patience, because dropping it early
+					// would lose an answer and gain nobody anything. When it *is* holding up a
+					// remark, though, twenty seconds is far too long, so past this it loses its
+					// place rather than the queue losing its pace. A direct request is exempt: the
+					// user asked for it and is waiting on this specific answer.
+					const blocking = queue.some((held) => held !== head && held.state === 'ready')
+					if (!blocking || head.priority === 'direct') break
+					if (now() - head.closedAt < HEAD_OF_LINE_MS) break
+					drop(head, 'late')
+					continue
+				}
+
+				// Asked before the hold below, not after. A remark held behind a ghost is exactly
+				// the one most likely to go stale, and a hold that came first would mean the age
+				// cap could never reach it — it would wait for a decision that might never come,
+				// and speak whenever it finally did, however long that took.
+				if (!stillWorthSaying(head)) {
+					drop(head, 'stale')
+					continue
+				}
+
+				// Never talk over a pending ghost. Checked here and not only at enqueue, because
+				// a proposal can appear after a thought was queued.
+				if (head.priority === 'ambient' && proposalPending()) break
+
+				head.state = 'speaking'
+				publishQueue()
+				// The ghost first, so the preview is on screen as the rationale is spoken; then
+				// the transcript, then the voice.
+				head.stage?.()
+				record(head.comment!)
+
+				await utter(head)
+
+				remove(head)
+				settle()
+				publishQueue()
+				if (disposed) break
+			}
+		} finally {
+			pumping = false
+			// Whatever the loop did, it may have freed a slot — a remark spoken, a thought
+			// dropped, one abandoned for having nothing to say. Any of those is the moment an
+			// arc waiting for room can take it.
+			flushCarried()
+			rearm()
+		}
 	}
 
 	/**
-	 * Reflect on the whole board: a spoken reading of it, plus a few new notes ghosted in open
-	 * space to accept or dismiss. On demand only. Shares the generation/in-flight discipline.
+	 * Come back when the clock alone would change the answer.
+	 *
+	 * The pump is otherwise woken by events — an answer arriving, a clip ending, a proposal
+	 * decided — and there are two places it stops where no event is coming. A head still
+	 * thinking while remarks queue behind it, and a head holding its sentence behind a ghost
+	 * nobody has decided. Both are supposed to end in a drop, and both would instead wait for
+	 * ever: the deadline that drops them is only read inside the loop, and nothing re-enters it.
+	 *
+	 * Armed only for a deadline in the future, which is what keeps this from spinning: a head
+	 * already past its deadline would have been dropped rather than reaching here.
 	 */
-	const runReflection = async (boardSummary: BoardSummary | undefined, persona: string) => {
-		if (!reflect || !planIdeas || !boardSummary) return
+	const rearm = () => {
+		cancelWake?.()
+		cancelWake = null
 
-		generation += 1
-		const mine = generation
-		inFlight?.abort()
-		const controller = new AbortController()
-		inFlight = controller
-		companionStage.set('observing')
-		companionUtterance.set(null)
-		companionFocus.set([])
+		const head = queue[0]
+		if (!head || head.state === 'speaking' || disposed) return
 
-		let reflection: Reflection | null = null
-		try {
-			reflection = await reflect.reflect({ board: boardSummary, persona }, controller.signal)
-		} catch {
-			// Aborted or failed — nothing to say or add.
+		let deadline: number | null = null
+		if (head.state === 'thinking') {
+			// Only when it is actually in the way. On its own it keeps the observer's ceiling,
+			// and that request will resolve or reject without any help from here.
+			const blocking = queue.some((held) => held !== head && held.state === 'ready')
+			if (blocking && head.priority !== 'direct') deadline = head.closedAt + HEAD_OF_LINE_MS
+		} else if (head.priority === 'ambient' && proposalPending()) {
+			deadline = head.closedAt + MAX_REMARK_AGE_MS
 		}
+		if (deadline === null) return
 
-		if (mine !== generation || disposed) return
-		inFlight = null
-
-		if (!reflection) {
-			companionStage.set('idle')
-			return
-		}
-
-		// Ghost the proposed ideas and arrows first, so the preview is on the canvas as the
-		// reading is spoken.
-		if (reflection.ideas.length > 0) ideaSuggestions.set(planIdeas(reflection.ideas))
-		const proposedRelations = reflection.relations ?? []
-		if (proposedRelations.length > 0) {
-			relationSuggestions.set(
-				proposedRelations.map((relation, index): GhostRelation => ({
-					id: `rel-${index}`,
-					from: relation.from,
-					to: relation.to,
-					...(relation.label ? { label: relation.label } : {}),
-				}))
-			)
-		}
-
-		if (reflection.comment) {
-			record(reflection.comment)
-			await speakComment(reflection.comment, mine, reflection.focus ?? [])
-		} else {
-			companionStage.set('idle')
-		}
+		cancelWake = delay(
+			() => {
+				cancelWake = null
+				void pump()
+			},
+			Math.max(0, deadline - now())
+		)
 	}
 
-	const handleEpisode = async (summary: EpisodeSummary, events: SpatialEvent[]) => {
-		if (!observationEnabled.get() || isTrivialEpisode(summary)) {
-			// Nothing is sent, so nothing is spent. A lone trivial episode is noise and is
-			// dropped as it always was — but once an arc is open, `events` is that whole arc,
-			// and returning without keeping it would truncate the arc to whatever came before
-			// this episode. Growth is bounded by the same `EPISODE_BUFFER_LIMIT` slice the
-			// merge applies.
-			if (carried.length > 0) carried = events
-			return
-		}
-		// The companion's own edit — an accepted grouping or committed ideas — finalizes as an
-		// episode moments later. Skip it: narrating or re-acting on its own work would loop.
-		if (now() < agentEditUntil) return
-		// A proposal is on the canvas awaiting a decision — never talk over a pending ghost.
-		if (groupingSuggestion.get()) return
-		if (ideaSuggestions.get().length > 0 || relationSuggestions.get().length > 0) return
+	/**
+	 * A slot has freed and an arc is waiting for one.
+	 *
+	 * Without this, overflow would only ever drain when the recorder next closes an episode —
+	 * so a burst that ends in stillness, which is what the end of a burst *is*, would strand its
+	 * own tail forever.
+	 */
+	const flushCarried = () => {
+		if (disposed || carried.length === 0 || queue.length >= QUEUE_LIMIT) return
+		const events = carried
+		handleEpisode(buildEpisodeSummary(events), events)
+	}
 
-		generation += 1
-		const mine = generation
-		// Still in flight here means the canvas fell quiet again on its own rather than the
-		// user coming back, so this thought is superseded, not killed: nothing to learn.
-		pending?.controller.abort()
-		const controller = new AbortController()
-		pending = {
-			generation: mine,
-			controller,
-			closedAt: now(),
-			idleAtClose: armedIdleMs,
-			events,
-		}
-		companionStage.set('observing')
-		// The previous remark's performance is over the moment a newer thought starts: its
-		// half-revealed sentence must not resurface behind this one, least of all if this one
-		// turns out to be silence. The transcript still has it whole, and its highlight goes.
-		//
-		// The sound goes with the text, and in that order — the utterance is what says a clip
-		// is playing at all. Clearing one without the other leaves the old remark talking
-		// over the new thought with nothing on screen behind it.
-		if (companionUtterance.get() !== null) voice.stop()
-		companionUtterance.set(null)
-		companionFocus.set([])
+	/** Put a thought in the queue and let the chips and the pump know. */
+	const enqueue = (thought: QueuedThought) => {
+		queue = insertByPriority(queue, thought)
+		publishQueue()
+		return thought
+	}
 
+	const newThought = (fields: Partial<QueuedThought> & { priority: Priority }): QueuedThought => ({
+		id: nextId++,
+		state: 'thinking',
+		gesture: 'thinking',
+		summary: null,
+		events: [],
+		focus: [],
+		closedAt: now(),
+		idleAtClose: armedIdleMs,
+		returnedAt: null,
+		controller: new AbortController(),
+		comment: null,
+		...fields,
+	})
+
+	/** The model has decided; hand the sentence to the queue. */
+	const ready = (thought: QueuedThought, comment: string, focus: NodeId[], stage?: () => void) => {
+		thought.comment = comment
+		thought.focus = focus
+		if (stage) thought.stage = stage
+		thought.state = 'ready'
+		publishQueue()
+		void pump()
+	}
+
+	/** Nothing to say, or nothing came back. Give up the slot. */
+	const abandon = (thought: QueuedThought) => {
+		remove(thought)
+		publishQueue()
+		void pump()
+	}
+
+	/**
+	 * Ask the observer about one episode.
+	 *
+	 * Runs beside its siblings rather than superseding them: whether the answer is still wanted
+	 * is a question about *this* thought — is it still in the queue — not about whether a newer
+	 * one exists. That distinction is the whole of "parallel think": a recency check here would
+	 * discard every answer but the last while still paying for all of them.
+	 */
+	const think = async (thought: QueuedThought) => {
 		// Built once and shared: the observer reads it as context, and a proactive suggestion
 		// reuses it rather than reading the canvas twice.
 		const boardSummary = board?.()
@@ -575,23 +793,19 @@ export function createCompanion({
 		try {
 			decision = await observer.observe(
 				{
-					episode: summary,
-					context: context?.(summary) ?? EMPTY_CONTEXT,
+					episode: thought.summary!,
+					context: context?.(thought.summary!) ?? EMPTY_CONTEXT,
 					recentComments: recentComments(),
 					board: boardSummary,
 				},
-				controller.signal
+				thought.controller.signal
 			)
 		} catch {
-			// Aborted by a newer episode, or the request failed — either way there is
-			// nothing to say. The generation check below decides who owns the UI.
+			// Cancelled, dropped for being late, or the request failed — either way, nothing.
 		}
 
-		// A newer episode started while we waited: it now owns the thinking indicator
-		// and the answer we have is about a canvas that has already changed. Drop it.
-		if (mine !== generation) return
-		// Torn down while we waited: the atoms belong to whatever mounts next.
-		if (disposed) return
+		// Cancelled while we waited, or the pump gave its place away. Torn down, likewise.
+		if (disposed || !queue.includes(thought)) return
 
 		const silent = !decision || !decision.speak || !decision.comment
 		// Re-read the switch rather than trusting the check made before the await: a user
@@ -600,6 +814,7 @@ export function createCompanion({
 		if (silent || !observationEnabled.get()) {
 			// The thought reached its end — silence is a first-class outcome — so the pause it
 			// waited out was long enough and the policy hands back half its penalty.
+			abandon(thought)
 			settle()
 			// The observer had nothing to say. This is the one moment a proactive grouping
 			// fits: silence, plus a board with a few scattered ideas, plus the cooldown
@@ -613,74 +828,220 @@ export function createCompanion({
 				boardSummary &&
 				boardSummary.nodeCount >= 3 &&
 				boardSummary.loners.length >= 2 &&
-				shouldPropose(summary, now())
+				shouldPropose(thought.summary!, now())
 			) {
-				await runSuggestion('proactive', boardSummary)
+				void runSuggestion('proactive', boardSummary)
 			}
 			return
 		}
 
-		const comment = decision!.comment!
-
-		// Record before speaking so the transcript fills even with voice off, and so a
-		// playback failure can't lose the observation.
-		record(comment)
-		await speakComment(comment, mine, episodeFocus(summary), {
-			signal: controller.signal,
-			onLand: settle,
-		})
+		ready(thought, decision!.comment!, episodeNodes(thought.summary!))
 	}
 
 	/**
-	 * Ask for a grouping now, organised by the user's intent. Bypasses the proactive gates —
-	 * the user asked, and told the companion what they are grouping by.
+	 * Ask the suggester for a grouping and, if one comes back, queue the rationale with the
+	 * ghost that goes on the canvas as it is spoken.
+	 *
+	 * A proactive proposal is ambient — it waits its turn behind the observations already in the
+	 * queue, because nobody asked for it. One requested from the toolbar is direct and jumps.
 	 */
-	const requestGrouping = (context: string) => {
-		if (disposed) return
-		// A proposal is already on the canvas; deciding it comes first.
-		if (groupingSuggestion.get()) return
-		if (ideaSuggestions.get().length > 0 || relationSuggestions.get().length > 0) return
-		// Respect the master switch: an asleep companion doesn't reach into the canvas.
-		if (!observationEnabled.get()) return
-		void runSuggestion('demand', board?.(), context)
+	const runSuggestion = async (
+		trigger: 'demand' | 'proactive',
+		boardSummary: BoardSummary | undefined,
+		intent?: string
+	) => {
+		if (!suggest || !planGrouping || !boardSummary) return
+
+		const thought = enqueue(
+			newThought({
+				priority: trigger === 'demand' ? 'direct' : 'ambient',
+				gesture: intent ? `grouping by ${intent}` : 'a grouping',
+			})
+		)
+		inFlight?.abort()
+		inFlight = thought.controller
+		// Count the cooldown from the attempt, not just a success, so repeated declines on a
+		// quiet canvas can't hammer the API.
+		if (trigger === 'proactive') lastProactiveAt = now()
+
+		let proposal: GroupingProposal | null = null
+		try {
+			proposal = await suggest.suggest(
+				{ board: boardSummary, trigger, recentComments: recentComments(), intent },
+				thought.controller.signal
+			)
+		} catch {
+			// Cancelled, superseded, or the request failed — either way, no proposal.
+		}
+
+		if (disposed || !queue.includes(thought)) return
+		if (inFlight === thought.controller) inFlight = null
+
+		const plan =
+			proposal && proposal.members.length >= 2 && proposal.rationale
+				? planGrouping(proposal.members)
+				: null
+		if (!plan) {
+			abandon(thought)
+			return
+		}
+
+		const rationale = proposal!.rationale
+		ready(thought, rationale, plan.members, () =>
+			groupingSuggestion.set({ members: plan.members, targets: plan.targets, rationale })
+		)
+	}
+
+	/**
+	 * Reflect on the whole board: a spoken reading of it, plus a few new notes ghosted in open
+	 * space to accept or dismiss. On demand only, so it jumps the line.
+	 */
+	const runReflection = async (boardSummary: BoardSummary | undefined, persona: string) => {
+		if (!reflect || !planIdeas || !boardSummary) return
+
+		const thought = enqueue(newThought({ priority: 'direct', gesture: `reflecting · ${persona}` }))
+		inFlight?.abort()
+		inFlight = thought.controller
+
+		let reflection: Reflection | null = null
+		try {
+			reflection = await reflect.reflect(
+				{ board: boardSummary, persona },
+				thought.controller.signal
+			)
+		} catch {
+			// Cancelled or failed — nothing to say or add.
+		}
+
+		if (disposed || !queue.includes(thought)) return
+		if (inFlight === thought.controller) inFlight = null
+
+		if (!reflection || !reflection.comment) {
+			// The ghosts are still worth having even with nothing said about them.
+			if (reflection) stageReflection(reflection)()
+			abandon(thought)
+			return
+		}
+
+		ready(thought, reflection.comment, reflection.focus ?? [], stageReflection(reflection))
+	}
+
+	/** The canvas half of a reflection — the ghosts it proposes, put up as the reading begins. */
+	const stageReflection = (reflection: Reflection) => () => {
+		if (reflection.ideas.length > 0) ideaSuggestions.set(planIdeas!(reflection.ideas))
+		const proposedRelations = reflection.relations ?? []
+		if (proposedRelations.length > 0) {
+			relationSuggestions.set(
+				proposedRelations.map((relation, index): GhostRelation => ({
+					id: `rel-${index}`,
+					from: relation.from,
+					to: relation.to,
+					...(relation.label ? { label: relation.label } : {}),
+				}))
+			)
+		}
 	}
 
 	/**
 	 * Read the board after a change the companion or user just made, and say what the board is
 	 * now — its new state and how the change shifts the overall picture. This is what the
 	 * companion says after committing its own edits, in place of a canned line: a fresh comment,
-	 * not a receipt. Shares the generation/in-flight discipline; the self-edit episode that
-	 * follows is swallowed (see `agentEditUntil`) so this is the only remark about the change.
+	 * not a receipt. Direct, because it answers a decision the user just took; the self-edit
+	 * episode that follows is swallowed (see `agentEditUntil`) so this is the only remark.
 	 */
 	const commentOnChange = async (recentChange: string) => {
 		if (!reflect || !board) return
 
 		const boardSummary = board()
-		generation += 1
-		const mine = generation
+		const thought = enqueue(newThought({ priority: 'direct', gesture: recentChange }))
 		inFlight?.abort()
-		const controller = new AbortController()
-		inFlight = controller
-		companionStage.set('observing')
-		companionUtterance.set(null)
-		companionFocus.set([])
+		inFlight = thought.controller
 
 		let reflection: Reflection | null = null
 		try {
-			reflection = await reflect.reflect({ board: boardSummary, recentChange }, controller.signal)
+			reflection = await reflect.reflect(
+				{ board: boardSummary, recentChange },
+				thought.controller.signal
+			)
 		} catch {
-			// Aborted or failed — nothing to say.
+			// Cancelled or failed — nothing to say.
 		}
 
-		if (mine !== generation || disposed) return
-		inFlight = null
+		if (disposed || !queue.includes(thought)) return
+		if (inFlight === thought.controller) inFlight = null
 
-		if (reflection && reflection.comment) {
-			record(reflection.comment)
-			await speakComment(reflection.comment, mine, reflection.focus ?? [])
-		} else {
-			companionStage.set('idle')
+		if (!reflection || !reflection.comment) {
+			abandon(thought)
+			return
 		}
+
+		ready(thought, reflection.comment, reflection.focus ?? [])
+	}
+
+	/**
+	 * An episode has closed. Decide whether it becomes a thought, and if not, whether its events
+	 * ride along with the next one.
+	 *
+	 * Every gate that declines has to answer the second question too, which is why they are not
+	 * bare returns. The cap is the one that matters most: it sits *above* the model call, not
+	 * above the chip, because a cap enforced after the request is a display cap and an
+	 * uncapped bill.
+	 */
+	const handleEpisode = (summary: EpisodeSummary, events: SpatialEvent[]) => {
+		/** The arc stays open: these events ride along with the next episode. */
+		const keep = () => {
+			carried = events.slice(-EPISODE_BUFFER_LIMIT)
+		}
+
+		if (!observationEnabled.get() || isTrivialEpisode(summary)) {
+			// Nothing is sent, so nothing is spent. A lone trivial episode is noise and is
+			// dropped as it always was — but once an arc is open, `events` is that whole arc,
+			// and returning without keeping it would truncate the arc to whatever came before
+			// this episode.
+			if (carried.length > 0) keep()
+			return
+		}
+		// The companion's own edit — an accepted grouping or committed ideas — finalizes as an
+		// episode moments later. Skip it: narrating or re-acting on its own work would loop.
+		// `carried` is left exactly as it was; our edit is not part of the user's arc.
+		if (now() < agentEditUntil) return
+		// A proposal is on the canvas awaiting a decision — never talk over a pending ghost.
+		if (proposalPending()) {
+			keep()
+			return
+		}
+		// Full. The gesture is not lost: it waits for a slot and is folded into the thought that
+		// takes it, so a burst costs at most this many observe calls and no observations.
+		if (queue.length >= QUEUE_LIMIT) {
+			keep()
+			return
+		}
+
+		carried = []
+		const episodeContext = context?.(summary) ?? EMPTY_CONTEXT
+		const thought = enqueue(
+			newThought({
+				priority: 'ambient',
+				gesture: describeGesture(summary, episodeContext),
+				summary,
+				events,
+				focus: episodeNodes(summary),
+			})
+		)
+		void think(thought)
+	}
+
+	/**
+	 * Ask for a grouping now, organised by the user's intent. Bypasses the proactive gates —
+	 * the user asked, and told the companion what they are grouping by.
+	 */
+	const requestGrouping = (intent: string) => {
+		if (disposed) return
+		// A proposal is already on the canvas; deciding it comes first.
+		if (proposalPending()) return
+		// Respect the master switch: an asleep companion doesn't reach into the canvas.
+		if (!observationEnabled.get()) return
+		void runSuggestion('demand', board?.(), intent)
 	}
 
 	/** Commit the pending grouping, comment on the board's new state, and swallow the self-edit episode. */
@@ -694,8 +1055,9 @@ export function createCompanion({
 		groupingSuggestion.set(null)
 		const moved = applyGrouping?.({ members: suggestion.members, targets: suggestion.targets }) ?? 0
 		// Whatever moved, our edit finalizes as an episode about `idleMs` from now; skip it, so
-		// the comment below is the only remark about the change.
-		agentEditUntil = now() + (idleMs ?? EPISODE_IDLE_MS) + AGENT_EDIT_GRACE_MS
+		// the comment below is the only remark about the change. Measured against the pause the
+		// recorder is actually waiting, which the backoff may have stretched well past the base.
+		agentEditUntil = now() + armedIdleMs + AGENT_EDIT_GRACE_MS
 		if (moved <= 0) return
 
 		const change = suggestion.rationale
@@ -709,8 +1071,7 @@ export function createCompanion({
 		if (disposed) return
 		if (!observationEnabled.get()) return
 		// A decision is already pending on the canvas; settle it first.
-		if (groupingSuggestion.get()) return
-		if (ideaSuggestions.get().length > 0 || relationSuggestions.get().length > 0) return
+		if (proposalPending()) return
 		void runReflection(board?.(), persona)
 	}
 
@@ -728,7 +1089,11 @@ export function createCompanion({
 		const arrows = chosen
 			.map((idea, index) =>
 				idea.connectTo && createdIds[index]
-					? { from: createdIds[index], to: idea.connectTo, ...(idea.connectLabel ? { label: idea.connectLabel } : {}) }
+					? {
+							from: createdIds[index],
+							to: idea.connectTo,
+							...(idea.connectLabel ? { label: idea.connectLabel } : {}),
+						}
 					: null
 			)
 			.filter((arrow): arrow is { from: NodeId; to: NodeId; label?: string } => arrow !== null)
@@ -739,7 +1104,7 @@ export function createCompanion({
 		ideaSuggestions.set(pending.filter((idea) => !ideaIds.includes(idea.id)))
 		if (createdIds.length > 0) {
 			// Our own notes finalize as an episode; skip it so the comment below is the only remark.
-			agentEditUntil = now() + (idleMs ?? EPISODE_IDLE_MS) + AGENT_EDIT_GRACE_MS
+			agentEditUntil = now() + armedIdleMs + AGENT_EDIT_GRACE_MS
 			const count = createdIds.length
 			void commentOnChange(`added ${count} new ${count === 1 ? 'idea' : 'ideas'} to the board`)
 		}
@@ -762,11 +1127,33 @@ export function createCompanion({
 			) ?? 0
 		relationSuggestions.set(pending.filter((relation) => !relationIds.includes(relation.id)))
 		if (drawn > 0) {
-			agentEditUntil = now() + (idleMs ?? EPISODE_IDLE_MS) + AGENT_EDIT_GRACE_MS
+			agentEditUntil = now() + armedIdleMs + AGENT_EDIT_GRACE_MS
 			void commentOnChange(
 				`drew ${drawn} new ${drawn === 1 ? 'connection' : 'connections'} between ideas`
 			)
 		}
+	}
+
+	/**
+	 * The × on a chip.
+	 *
+	 * The user's own decision, so it costs the pacing policy nothing: a cancelled thought is not
+	 * evidence that the pause was misjudged, it is evidence that the user did not want this
+	 * particular remark. It is also the only route by which a clip already speaking is ever cut
+	 * off — the queue never does that on its own.
+	 */
+	const cancelThought = (id: number) => {
+		if (disposed) return
+		const thought = queue.find((held) => held.id === id)
+		if (!thought) return
+
+		thought.controller.abort()
+		remove(thought)
+		// A clip already playing has to be silenced; aborting only cancels a request. The
+		// client reports the ending, which is what lets the pump move on.
+		if (thought.state === 'speaking') voice.stop()
+		publishQueue()
+		void pump()
 	}
 
 	// Subscribed before the recorder, deliberately. Both listen to the same stream and are
@@ -777,32 +1164,58 @@ export function createCompanion({
 
 	const disposeRecorder = createEpisodeRecorder(stream, {
 		onEpisode: (summary, events) => {
-			// A killed thought's events ride along, re-folded with the new ones as a single
-			// episode: what the observer receives is what it would have seen had the user
-			// never paused. Bounded like the recorder's own buffer, and with the same
-			// tradeoff — the slice costs the oldest `before`, so it is set far above any real
-			// gesture and is a backstop rather than a working limit.
+			// A carried arc rides along, re-folded with the new events as a single episode: what
+			// the observer receives is what it would have seen had the user never paused.
+			// Bounded like the recorder's own buffer, and with the same tradeoff — the slice
+			// costs the oldest `before`, so it is set far above any real gesture.
 			if (carried.length === 0) {
-				void handleEpisode(summary, events)
+				handleEpisode(summary, events)
 				return
 			}
 			const merged = [...carried, ...events].slice(-EPISODE_BUFFER_LIMIT)
-			void handleEpisode(buildEpisodeSummary(merged), merged)
+			handleEpisode(buildEpisodeSummary(merged), merged)
 		},
 		schedule,
 		idleMs: nextIdleMs,
+	})
+
+	/**
+	 * A proposal has been decided, so the remarks waiting behind it may go.
+	 *
+	 * The ghosts are cleared from four places — two here, two in the controls the user clicks —
+	 * and chasing every setter would leave the queue wedged the first time a fifth appeared.
+	 * Reading the atoms is what makes this re-run; the microtask keeps the pump's own writes
+	 * out of the reaction that scheduled it.
+	 */
+	let proposalWasPending = proposalPending()
+	const unwatchProposals = react('companion proposal decided', () => {
+		const pending = proposalPending()
+		// Only the *transition* to nothing-pending, never the standing state. A reaction that
+		// pumped whenever no ghost was up would fire once at construction, and the microtask
+		// carrying it would land after whatever the caller did next — reaching a queue it was
+		// never meant to see.
+		const cleared = proposalWasPending && !pending
+		proposalWasPending = pending
+		if (cleared) queueMicrotask(() => void pump())
 	})
 
 	const dispose = () => {
 		disposed = true
 		unsubscribeActivity()
 		disposeRecorder()
-		pending?.controller.abort()
-		pending = null
+		unwatchProposals()
+		cancelWake?.()
+		cancelWake = null
+		for (const thought of queue) thought.controller.abort()
+		inFlight?.abort()
+		inFlight = null
+		queue = []
 		carried = []
 		// Abort only cancels a request; a clip already speaking has to be silenced, or the
-		// companion keeps talking after the canvas it was describing is gone.
+		// companion keeps talking after the canvas it was describing is gone. It also settles
+		// whatever the pump is still awaiting, so the loop does not hold the editor alive.
 		voice.stop()
+		companionQueue.set([])
 		companionStage.set('idle')
 		companionUtterance.set(null)
 		companionFocus.set([])
@@ -815,5 +1228,13 @@ export function createCompanion({
 		relationSuggestions.set([])
 	}
 
-	return { dispose, requestGrouping, acceptGrouping, requestReflection, commitIdeas, commitRelations }
+	return {
+		dispose,
+		requestGrouping,
+		acceptGrouping,
+		requestReflection,
+		commitIdeas,
+		commitRelations,
+		cancelThought,
+	}
 }

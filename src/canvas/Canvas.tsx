@@ -4,6 +4,7 @@ import { components, customShapeUtils, customTools, uiOverrides } from '@/canvas
 import { registerNodeMetadata } from '@/canvas/adapter/metadata'
 import { registerSpatialEvents } from '@/canvas/adapter/spatialEvents'
 import { readEpisodeContext } from '@/canvas/adapter/episodeContext'
+import { readEpisodeValidity } from '@/canvas/adapter/episodeValidity'
 import { readBoardSummary } from '@/canvas/adapter/boardContext'
 import { applyGrouping, planGrouping } from '@/canvas/adapter/grouping'
 import { createAgentNotes, planIdeaNotes } from '@/canvas/adapter/ideas'
@@ -17,6 +18,7 @@ import { createHttpReflectClient } from '@/companion/reflectClient'
 import { createHttpVoiceClient } from '@/companion/voiceClient'
 import {
 	acceptGrouping,
+	cancelThought,
 	commitIdeas,
 	commitRelations,
 	requestGrouping,
@@ -51,6 +53,10 @@ function handleMount(editor: Editor) {
 		// The whole board as background for the observer, and the input the suggester and the
 		// reflection reason over, so they see the arrangement rather than the last nudge.
 		board: () => readBoardSummary(editor),
+		// The board as it stands the moment a queued remark reaches the front, in the terms its
+		// own episode described it in — so a remark about a gesture the user has since undone
+		// is dropped rather than spoken. Read here, judged in `thoughtQueue`.
+		verify: (summary) => readEpisodeValidity(getCanvasDocument(editor), summary),
 		// The model names members; these turn that into concrete moves against the live canvas.
 		planGrouping: (memberIds) => planGrouping(editor, memberIds),
 		applyGrouping: (plan) => applyGrouping(editor, plan),
@@ -68,6 +74,7 @@ function handleMount(editor: Editor) {
 	requestReflection.set(companion.requestReflection)
 	commitIdeas.set(companion.commitIdeas)
 	commitRelations.set(companion.commitRelations)
+	cancelThought.set(companion.cancelThought)
 
 	const disposers = [
 		registerNodeMetadata(editor),
@@ -83,6 +90,7 @@ function handleMount(editor: Editor) {
 			requestReflection.set(null)
 			commitIdeas.set(null)
 			commitRelations.set(null)
+			cancelThought.set(null)
 			companion.dispose()
 		},
 	]

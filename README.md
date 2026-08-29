@@ -127,7 +127,7 @@ The rest of the UI follows the same rule — earn permanent space or be one clic
 | Where               | What                                                                                                                                                                    | Why there                                                                                                                                                                      |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Top centre          | The **companion's** latest sentence, released word by word as the voice says it — and while it works, a hint naming the job it is on. Click it for the full transcript. | The only part of this UI that speaks unprompted, so the only one always visible. tldraw leaves this zone empty.                                                                |
-| Top right           | **⋯** → the three switches (contextual fields, AI observation, voice) · **`</>` Canonical JSON** → the [Inspector](#four-layers-of-context)                             | tldraw stacks this zone above the style panel in one column, so anything permanent here pushes the style panel down the screen. Two buttons, and the panels hang beneath them. |
+| Top right           | **⋯** → the four switches (contextual fields, AI observation, voice, follow) · **`</>` Canonical JSON** → the [Inspector](#four-layers-of-context)                      | tldraw stacks this zone above the style panel in one column, so anything permanent here pushes the style panel down the screen. Two buttons, and the panels hang beneath them. |
 | Right, on selection | Field radius, [relational gravity](#relational-gravity), post-it colours                                                                                                | Selection-scoped, so it belongs in tldraw's own style panel.                                                                                                                   |
 | Bottom left         | Zoom                                                                                                                                                                    | tldraw's.                                                                                                                                                                      |
 
@@ -500,10 +500,10 @@ Both remarks in that transcript are what the model actually said to the canvas u
 
 **Four behaviours in the orchestrator are worth naming**, all in `createCompanion`:
 
-- **Two switches, two different jobs.** `observationEnabled` gates the model call; `voiceEnabled` gates only playback. Off/off is silent; on/off fills the transcript without speaking. The switch is re-read after the await, because a user who turns observation off mid-thought is asking not to be spoken to, and the answer in hand was authorised by a setting that no longer holds.
-- **At most one observation in flight.** A new episode aborts the previous request — the canvas has moved on, so its answer is about a state that no longer exists — and a generation counter makes a late response harmless even if the abort is ignored.
-- **A thought dies when the user comes back, and the pause it waited out learns from having been wrong.** See [the pause is a guess](#the-pause-is-a-guess) below; it is the one behaviour here that changes what the model is asked, not merely when.
-- **The text arrives with the voice.** Deciding what to say and synthesising it are two waits of a few seconds each. Announcing the remark after the first one meant the user read it, finished, and only then heard it read aloud — so the thinking hint stays up through synthesis, and the words are released as playback reports its progress (`spokenPrefix` in `reveal.ts`, position-weighted since an mp3 carries no word timings). The transcript is still written _before_ playback: it is the record of what the companion decided, so it must survive voice being off or synthesis failing.
+- **Three switches, three different jobs.** `observationEnabled` gates the model call; `voiceEnabled` gates only playback; `followEnabled` gates whether the canvas moves to whatever a remark is about. Off/off is silent; on/off fills the transcript without speaking. Observation is re-read after the await, because a user who turns it off mid-thought is asking not to be spoken to, and the answer in hand was authorised by a setting that no longer holds. Follow is last and refusable because it is the most assertive of the three: a sentence can be ignored while you carry on working, a camera move cannot.
+- **Observations queue; the voice is serial.** Every closed episode is asked about at once, and the answers are spoken one after another in the order the gestures happened. See [a queue, not a thought](#a-queue-not-a-thought) below — it is the one behaviour here that changes what the model is asked, not merely when.
+- **A remark can be dropped, but only at the door.** A thought is never called off for the canvas having moved; it is asked, at the last moment silence is still free, whether it is too late or no longer true.
+- **The text arrives with the voice.** Deciding what to say and synthesising it are two waits of a few seconds each. Announcing the remark after the first one meant the user read it, finished, and only then heard it read aloud — so the thinking hint stays up through synthesis, and the words are released as playback reports its progress (`spokenPrefix` in `reveal.ts`, position-weighted since an mp3 carries no word timings). The transcript is written as the remark takes the voice rather than when the model answered — a thought dropped at the door was never said — but still _before_ playback, so it survives voice being off or synthesis failing.
 
 **Both API keys live in `server/`.** That is the whole reason this repo has a backend — two Hono routes, `/api/observe` and `/api/speak`, with the prompt and the model choice server-side so the persona can be tuned without shipping anything to the browser. Both routes **fail safe**: a malformed body, a missing key or a 400 from the SDK all degrade to `{ speak: false }` rather than an error at the user. The observer runs with thinking disabled, because `max_tokens` caps thinking plus text and a truncated response parses to nothing — which is indistinguishable from a considered silence.
 
@@ -517,7 +517,7 @@ Both remarks in that transcript are what the model actually said to the canvas u
 
 Summing those medians gives ~6.0s from "user stops dragging" to first sound, with the thinking hint covering the last ~4.7s. A live gesture measured end to end came in faster — 1.17s to the episode closing, a decision back at 3.19s — because the model call is the variable term and a simple episode is nearer 2s than 3s. Call it 5–6s, most of it the hint.
 
-**Almost all of the hint is the model call, so the hint is the hard part.** The idle pause is the only stage that was cheap to cut, and it sits _before_ the hint appears — so lowering it to 1.2s made the companion react sooner without shortening the wait the user actually watches. (It is also why cutting it was not the whole answer: a shorter pause starts the same 4.7s pipeline sooner, which is a separate problem from the pipeline being long enough for the canvas to change underneath it. See [the pause is a guess](#the-pause-is-a-guess).) Inside the hint, three things were measured and two were rejected:
+**Almost all of the hint is the model call, so the hint is the hard part.** The idle pause is the only stage that was cheap to cut, and it sits _before_ the hint appears — so lowering it to 1.2s made the companion react sooner without shortening the wait the user actually watches. (It is also why cutting it was not the whole answer: a shorter pause starts the same 4.7s pipeline sooner, which is a separate problem from the pipeline being long enough for the canvas to change underneath it. See [a queue, not a thought](#a-queue-not-a-thought).) Inside the hint, three things were measured and two were rejected:
 
 - **`OBSERVER_MODEL=claude-haiku-4-5` is still the one large lever** — about 2s faster, at a cost in judgement. Sonnet is kept deliberately.
 - **`output_config.effort` is not a lever, and the way that was established is the point.** Measured three times with improving method, the apparent win shrank each time: 0.66s with the levels timed one block after another, 0.44s once the levels were interleaved so API drift hit them equally, and **0.14s** once the sweep ran over three different episodes instead of one. `medium` is also bimodal (2.00 – 3.56s) where `low` is steady, which is how a lucky block ordering produced the first number. Left unset — at `high` the judgement is best and the latency is the same. A lever that keeps shrinking as the measurement improves was never there.
@@ -525,30 +525,40 @@ Summing those medians gives ~6.0s from "user stops dragging" to first sound, wit
 
 Prompt caching is not a lever either: the cacheable prefix is the system prompt alone at ~500 tokens, and `claude-sonnet-5` will not cache below 1024, so a `cache_control` marker would silently do nothing.
 
-#### The pause is a guess
+#### A queue, not a thought
 
-The table above has a consequence the latency work missed. If it takes ~4.7s to turn a closed episode into a spoken remark, then a remark is only ever about a canvas as it stood 4.7s ago — and the pause that decided when to start is a guess about one user's rhythm applied to every user. Guess short and a pause mid-arrangement is read as the end of a gesture: a thought starts, the user comes back, and the answer arrives describing something they have already moved past. Guess long and the companion says nothing worth hearing because it hears nothing.
+The table above has a consequence the latency work missed. If it takes ~4.7s to turn a closed episode into a spoken remark, then a remark is only ever about a canvas as it stood 4.7s ago — and the pause that decided when to start is a guess about one user's rhythm applied to every user. Guess short and a pause mid-arrangement is read as the end of a gesture; guess long and the companion says nothing worth hearing because it hears nothing.
 
-The original code made this worse than it needed to be. A stale request was aborted only when the _next_ episode closed, which is another full pause later — so a remark about an abandoned arrangement had a comfortable window in which to arrive, be recorded, and be spoken over the gesture in progress. Three changes, together:
+The first answer to that was to **kill** the thought: the moment the user touched the board, the request was aborted, its events carried into the next episode, and the pause stretched past the quiet that had fooled it. It was a defensible bet — a remark about a canvas that has moved on is worse than silence — and it was the wrong one. Keep arranging and the companion had nothing to say about any of it except the last thing you did. The interesting burst is exactly the burst it threw away.
+
+So the pipeline behaves like a queue of tasks instead. Every gesture gets a slot, the thinking happens in parallel, and the remarks are spoken one after another in the order the gestures happened. Watching it work through three things it noticed is more companionable than watching it forget two of them — and the backlog is visible, with an × on each chip, because a queue you can only watch is a status readout and a queue you can steer is a control.
+
+![The companion's top-centre strip: the thinking hint naming the thought in hand, and a chip beneath it naming the gesture waiting behind it, each dismissable](docs/images/companion-queue.png)
 
 ```mermaid
 flowchart TD
-    A["episode closes<br/>(canvas quiet for the pause)"] --> B["thought in flight<br/>observe → synthesise"]
-    B --> C{"user touches<br/>the board?"}
-    C -- "yes" --> D["abort the request<br/>drop the hint"]
-    D --> E["carry the events forward<br/>next episode is folded with them"]
-    E --> F["raise the pause past<br/>the quiet that fooled us"]
-    F --> A
-    C -- "no" --> G["remark lands<br/>transcript, then voice"]
-    G --> H["ease the pause<br/>halfway back"]
-    H --> A
+    A["episode closes<br/>(canvas quiet for the pause)"] --> Cap{"queue full?"}
+    Cap -- "yes" --> Carry["carry the events forward<br/>no request, no cost"]
+    Carry -.-> A
+    Cap -- "no" --> B["ask the observer<br/>(all of them at once)"]
+    B --> Q[["queue, in gesture order"]]
+    Q --> H{"at the front:<br/>too late, or no<br/>longer true?"}
+    H -- "yes" --> D["drop it, unsaid<br/>and unrecorded"]
+    H -- "no" --> G["transcript, then voice<br/>— nothing else speaks until it ends"]
+    G --> S["ease the pause<br/>halfway back"]
+    D --> P["was the user straight back?<br/>then the pause was too short"]
 ```
 
-- **A thought dies the moment the user returns**, not when the next episode closes. Measured in the browser, the hint drops **8ms** after the interrupting change — which also means the hint now reports something true, since a stranded "✦ Agent thinking…" over a canvas being actively rearranged was the visible half of this bug. Because `speak()` resolves at playback _start_, the same abort reaches synthesis and can never reach sound: a sentence already being spoken rides it out, because cutting one off mid-word every time the board is touched is worse than one that finishes late.
-- **The killed gesture is carried forward.** Its raw events are prepended to the next episode's and re-folded through the same `buildEpisodeSummary`, so what the observer eventually receives is exactly what it would have seen had the user never paused — the whole arc, not the fragment after the false ending. This is why the escalation below is safe: waiting longer costs nothing in coverage.
-- **The pause moves, and it moves on evidence.** A kill tells us precisely how much quiet was not enough — what the recorder waited out, plus how long the user stayed away after it fired. `createIdleBackoff` lands the next pause past that measured figure rather than groping toward it geometrically, with a step floor so a user who returns instantly still makes progress, and a 4s ceiling. A remark that lands hands half the penalty back. Live, interrupting four times in a row walked it 1.2 → 1.8 → 2.4 → 3.1 → 3.7s; going quiet once brought it to 2.4s.
+Four things make that work, and each is a place the old design had nothing:
 
-The ceiling is the load-bearing number. Total quiet needed for a remark to reach the user is the pause plus that 4.7s — 5.9s at rest, 8.7s at the cap — so a policy that escalated freely would escalate itself into permanent silence. It is shown, not hidden: the companion settings popover reads `Pause 2.4s · 4 dropped`, because a number that moves on its own and cannot be seen is indistinguishable from a bug. It is deliberately not adjustable; the point of the mechanism is that it works this out better than a slider would.
+- **The pump is the only thing that speaks.** Not a convention — a structural guarantee. An observation, a proactive grouping, an on-demand reflection and the comment after an accepted edit all _enqueue_; none of them touch the voice. Two of them used to speak directly, which under a queue means two clips talking over each other. A direct request jumps the line rather than talking beside it: it takes the next turn, never the current one, because cutting a sentence off mid-word is the thing this loop has always refused to do.
+- **A remark is dropped at the door, not in flight.** Two rules, and age comes first because it is the only one that cannot be wrong: nothing records what a remark actually _asserted_, so `isStillTrue` reads the episode as a proxy and is blind to a remark about the board as a whole. Age catches those too. `isStillTrue` is the narrower second rule, and it catches the specific embarrassment — naming a note since deleted, or describing a drag since dragged back. It compares against the _rounded centre_ a `node_moved` was recorded in, not `spatial.x/y`, because those are two different frames and mixing them fails silently.
+- **The cap sits above the model call.** Four thoughts, checked before the request rather than before the chip — a cap enforced after the request is a display cap and an uncapped bill. Four is not a UI choice either: a remark is ~7s of speech plus ~1.6s of synthesis, so four deep puts the last one nearly thirty seconds behind the gesture that produced it, which is already at the edge of being worth hearing. An overflowing gesture is not lost; it waits for a slot and is folded into the thought that takes it.
+- **The pause still learns, from a narrower signal.** `createIdleBackoff` existed to make kills rarer, and nothing is killed now — but it is also the only thing throttling what a fidget costs in paid calls, so it stays. It fires on the one pair of conditions that still means _the pause was too short_: a thought dropped as no longer true, **and** a user who came straight back after the pause fired. Either alone says something else. A prompt return whose remark still held says the pause was fine; a remark stale a minute later says the board moved on, not that the timing was wrong.
+
+The ceiling is still the load-bearing number. Total quiet needed for a remark to reach the user is the pause plus that 4.7s — 5.9s at rest, 8.7s at the cap — so a policy that escalated freely would escalate itself into permanent silence. It is shown, not hidden: the companion settings popover reads `Pause 2.4s · 4 dropped`, because a number that moves on its own and cannot be seen is indistinguishable from a bug. It is deliberately not adjustable; the point of the mechanism is that it works this out better than a slider would.
+
+**One thing the queue cost, and it was worth naming.** Speaking in turn only works if the voice reports when it has stopped, and it did not: `stop()` ends a clip with `audio.pause()`, which fires no `ended` event, and a refused `play()` fires nothing at all. Three of the five ways a clip can end were silent, so a serial pump would have deadlocked the first time anything interrupted anything. `VoiceClient` now reports the ending on every path, exactly once — and the request carries the same twenty-second ceiling the observer already had, since a hung `/api/speak` used to cost a stuck hint and now would cost every remark after it.
 
 **What did shrink was the remark.** Chasing the latency turned up a separate problem: "one or two short, conversational, observational sentences" was too loose an instruction, and remarks were averaging 168 characters — every one of them over 140 — with the longer ones narrating what the user had just done rather than what it might mean. Replacing that line with an explicit ceiling and three examples of the right register took the mean to **114 characters, none over 140**, with no example ever parroted back. Since the voice speaks at roughly 16 characters a second, that is about three and a half seconds less talking per remark, which does more for how long the companion _feels_ than any of the levers above. Examples beat prohibitions here: the earlier attempt to get brevity by lowering `effort` made remarks **longer**, because it bought its speed by loosening adherence to exactly this paragraph.
 
@@ -640,10 +650,11 @@ src/
     episode.ts                 Events folded into one gesture + the local significance gate
     index.ts                   Barrel — the @/domain import surface
   companion/                   The AI observer's loop — the event stream's one consumer
-    companion.ts               episode → gate → observe → record → speak
-    companionState.ts          Module atoms: the switches, the stage, the transcript
+    companion.ts               episode → gate → observe → queue → speak
+    thoughtQueue.ts            Where a thought goes, whether it is still worth saying, its label
+    companionState.ts          Module atoms: the switches, the stage, the transcript, the queue
     observerClient.ts          The seam to the model — POST an episode, get a decision
-    voiceClient.ts             The seam to TTS — POST text, play audio, report progress
+    voiceClient.ts             The seam to TTS — POST text, play audio, report progress and the end
     reveal.ts                  Which words have been said at a given fraction of playback
   canvas/
     Canvas.tsx                 The <Tldraw /> wrapper — persistence, onMount hook
@@ -659,6 +670,7 @@ src/
       contextualField.ts       setContextualFieldRadius(editor, ids, radius)
       spatialEvents.ts         Drives diffCanvas from live edits — the one subscription
       episodeContext.ts        An episode's ids → note text + the relations that exist
+      episodeValidity.ts       The live board in the terms one episode described it in
     dev/
       seedScenario.ts          The walkthrough scene, behind window.seedDemoScene()
     shapes/                    The tldraw projection of a post_it
@@ -679,10 +691,12 @@ src/
       InspectorPanel.tsx       Live canonical JSON, relation + influence tables, grounded export
       EventLogPanel.tsx        Live view of the spatial event stream, newest first
       CompanionBar.tsx         The top-centre chip: latest sentence, thinking, transcript
+      CompanionQueue.tsx       The backlog behind the bar, one dismissable chip per gesture
+      CompanionFocusCamera.tsx Follows the spotlight with the camera; renders nothing
       CompanionTranscriptPanel.tsx  Everything the companion has said this session
       CompanionControls.tsx    The AI observation and Voice switches
       AgentThinkingIndicator.tsx  The hint naming the job the companion is on
-      ViewSettingsPopover.tsx  The ⋯ button's three switches
+      ViewSettingsPopover.tsx  The ⋯ button's four switches
       PostItStylePanel.tsx     Colour controls, and hosts the field and gravity controls
       ContextualFieldControl.tsx  Radius input for the selection
       RelationGravityControl.tsx  Gravity input for the selected relations
@@ -740,20 +754,22 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 - **A text edit reaches neither the stream nor the observer** — the same limitation as the event vocabulary above, but worth stating twice, because it means the companion is blind to the one change that alters what an idea _means_.
 - **The companion needs two API keys and is otherwise silent.** With no `.env` the routes fail safe and return `{ speak: false }`, which is indistinguishable at the UI from a model that had nothing to say. Everything else in the app is unaffected.
 - **The transcript is in memory and capped** at `TRANSCRIPT_LIMIT` (50); a reload starts empty, for the same reason the event log does. Anti-repetition sees only the last `DEFAULT_HISTORY_SIZE` (3) remarks, so the companion can repeat itself across a long session.
-- **`TRIVIAL_INFLUENCE_EPSILON` is uncalibrated**, like `INTENT_WEIGHT` and the proximity bands: 0.05 is a guess at what counts as a nudge, set to feel right in use rather than measured against a task. `EPISODE_IDLE_MS` used to be the same kind of guess and is now only the [resting value](#the-pause-is-a-guess) of one that corrects itself — but the four constants governing that correction (step, margin, ceiling, and the halving on success) are themselves uncalibrated, and only the ceiling has an argument behind it.
-- **The pause adapts to interruption, not to a person.** It resets to `EPISODE_IDLE_MS` on every mount, so nothing is learned across sessions, and it is driven by a single signal — was a thought killed — rather than by the distribution of the user's actual pauses. A user whose rhythm is consistently slower re-earns the same penalty at the start of every session.
-- **An open arc keeps accumulating until it is worth a remark.** Carried events are cleared only when an episode is actually _sent_, so an arc interrupted repeatedly, or one whose merged episode keeps netting out below the significance gate, grows until something meaningful happens — bounded only by the `EPISODE_BUFFER_LIMIT` slice, which costs the arc its earliest `before` when it bites.
+- **`TRIVIAL_INFLUENCE_EPSILON` is uncalibrated**, like `INTENT_WEIGHT` and the proximity bands: 0.05 is a guess at what counts as a nudge, set to feel right in use rather than measured against a task. `EPISODE_IDLE_MS` used to be the same kind of guess and is now only the [resting value](#a-queue-not-a-thought) of one that corrects itself — but the four constants governing that correction (step, margin, ceiling, and the halving on success) are themselves uncalibrated, and only the ceiling has an argument behind it.
+- **The pause adapts to one signal, not to a person.** It resets to `EPISODE_IDLE_MS` on every mount, so nothing is learned across sessions, and it is driven by a single conjunction — a remark dropped as no longer true, by a user who came straight back — rather than by the distribution of the user's actual pauses. A user whose rhythm is consistently slower re-earns the same penalty at the start of every session. The raise also lands on the _next_ gesture rather than the one that earned it, since the drop happens well after the recorder has armed its timer.
+- **A queue is only as deep as the model is talkative.** Silence is the normal verdict, so most thoughts leave the queue after the observe call alone and the backlog is usually one or two. That is the design working, but it means the visible queue is rarely as legible as the mechanism behind it.
+- **`isStillTrue` reads the episode, not the remark.** Nothing records what a remark asserted, so the check is a proxy: it cannot contradict a remark about the board as a whole, or one whose phrasing wandered from the change that prompted it. The age cap is what covers those, which is why it is the primary rule and this is the secondary one.
+- **An open arc keeps accumulating until it is worth a remark.** Carried events are cleared only when an episode is actually _sent_, so an arc that keeps overflowing a full queue, or one whose merged episode keeps netting out below the significance gate, grows until something meaningful happens — bounded only by the `EPISODE_BUFFER_LIMIT` slice, which costs the arc its earliest `before` when it bites.
 - **A drag that never pauses never becomes an episode.** The recorder finalizes on idle, so continuous manipulation defers the observation indefinitely — `EPISODE_BUFFER_LIMIT` (2000 events) is a backstop against unbounded growth, and hitting it costs the episode its earliest `before`.
 
 ## Testing
 
 `npm test` runs three layers, because the first one alone turned out not to be enough — two bugs shipped that were invisible to pure tests (a meta write the record validator rejected, and a control whose commit was destroyed by the selection change that triggered it).
 
-| Layer              | Files                                                                                                                                                                                                                                                      | Environment                |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff,events,eventStream,episode}.test.ts`, `companion/{renderEpisode,reveal}.test.ts`, `adapter/{adapter,relations}.test.ts`, `grounding/{visualId,projection,grounding,annotationLayer}.test.ts` | `node` — no DOM, no editor |
-| Real editor        | `adapter/{editor,relationEditor,spatialEvents}.test.ts`, `dev/seedScenario.test.ts`, `grounding/groundedExport.test.ts`, `companion/companion.test.ts`                                                                                                     | `jsdom`                    |
-| Rendered component | `ui/*.test.tsx`                                                                                                                                                                                                                                            | `jsdom`                    |
+| Layer              | Files                                                                                                                                                                                                                                                                   | Environment                |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| Pure               | `domain/{canvas,spatialInfluence,effectiveStrength,canvasDiff,events,eventStream,episode}.test.ts`, `companion/{renderEpisode,reveal,thoughtQueue}.test.ts`, `adapter/{adapter,relations}.test.ts`, `grounding/{visualId,projection,grounding,annotationLayer}.test.ts` | `node` — no DOM, no editor |
+| Real editor        | `adapter/{editor,relationEditor,spatialEvents,episodeValidity}.test.ts`, `dev/seedScenario.test.ts`, `grounding/groundedExport.test.ts`, `companion/{companion,voiceClient}.test.ts`                                                                                    | `jsdom`                    |
+| Rendered component | `ui/*.test.tsx`                                                                                                                                                                                                                                                         | `jsdom`                    |
 
 The companion needs no network, no clock and no audio device to be tested: `createCompanion` takes an `ObserverClient`, a `VoiceClient` and a `Schedule`, so every branch of the loop — silence, voice off, observation off, interruption, anti-repetition, the text/voice handover — is driven through fakes. `renderEpisode` is tested from the client side even though it lives in `server/` (imported by relative path, since Vite's `@` alias doesn't cover it), because what the model is _told_ is as much a decision as what it is asked: a payload rendered as opaque shape ids still produces a fluent remark, just a meaningless one. The two routes themselves have no tests — what is left of them after the prompt is the SDK.
 

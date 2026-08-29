@@ -17,6 +17,14 @@ import {
 	type SpatialEvent,
 } from '@/domain'
 import { createCompanion } from '@/companion/companion'
+import {
+	HEAD_OF_LINE_MS,
+	MAX_REMARK_AGE_MS,
+	MIN_DWELL_MS,
+	pairKey,
+	QUEUE_LIMIT,
+	type EpisodeValidity,
+} from '@/companion/thoughtQueue'
 import type { ObserveRequest, ObserverClient, ObserverDecision } from '@/companion/observerClient'
 import type { GroupingProposal, SuggestClient, SuggestRequest } from '@/companion/suggestClient'
 import type { Reflection, ReflectClient, ReflectRequest } from '@/companion/reflectClient'
@@ -24,6 +32,7 @@ import type { VoiceClient } from '@/companion/voiceClient'
 import {
 	companionFocus,
 	companionPacing,
+	companionQueue,
 	companionStage,
 	companionTranscript,
 	companionUtterance,
@@ -126,20 +135,40 @@ function fakeVoice({ manual = false }: { manual?: boolean } = {}) {
 	const spoken: string[] = []
 	let stopped = 0
 
-	const plays: { text: string; start: () => void; progress: (fraction: number) => void }[] = []
+	const plays: {
+		text: string
+		start: () => void
+		progress: (fraction: number) => void
+		/** The clip is over — what the real client reports from `ended`, `error` or a `stop()`. */
+		finish: () => void
+	}[] = []
 
 	const voice: VoiceClient = {
 		speak: async (text, options) => {
 			spoken.push(text)
+			let ended = false
+			const finish = () => {
+				if (ended) return
+				ended = true
+				options?.onEnd?.()
+			}
 			plays.push({
 				text,
 				start: () => options?.onStart?.(),
 				progress: (fraction) => options?.onProgress?.(fraction),
+				finish,
 			})
-			if (!manual) options?.onStart?.()
+			if (!manual) {
+				// Starts and finishes in the same breath. The queue is paced by the ending, so a
+				// fake that never reported one would leave every test after the first remark
+				// waiting on a clip that had already, as far as anything can tell, stopped.
+				options?.onStart?.()
+				finish()
+			}
 		},
 		stop: () => {
 			stopped += 1
+			for (const play of plays) play.finish()
 		},
 	}
 
@@ -157,7 +186,10 @@ function fakeVoice({ manual = false }: { manual?: boolean } = {}) {
 function brokenVoice() {
 	let stopped = 0
 	const voice: VoiceClient = {
-		speak: async () => {
+		speak: async (_text, options) => {
+			// The real client reports the ending even for a synthesis that never happened; a
+			// fake that only threw would be a fake the pump could deadlock on.
+			options?.onEnd?.()
 			throw new Error('speak failed: 500')
 		},
 		stop: () => {
@@ -206,7 +238,10 @@ const scatteredBoard: BoardSummary = {
 }
 
 /** A plan builder that just lines the members up — enough for the loop tests. */
-const linePlan = (ids: string[]) => ({ members: ids, targets: ids.map((id, i) => ({ id, x: i * 10, y: 0 })) })
+const linePlan = (ids: string[]) => ({
+	members: ids,
+	targets: ids.map((id, i) => ({ id, x: i * 10, y: 0 })),
+})
 
 /** A reflecter whose answers resolve on the test's command. */
 function fakeReflecter() {
@@ -227,7 +262,12 @@ function fakeReflecter() {
 
 /** Turn proposals into ghost ideas the way the adapter would — index-keyed, lined up. */
 const ghostIdeas = (
-	proposals: { text: string; kind: 'idea' | 'question'; connectTo?: string; connectLabel?: string }[]
+	proposals: {
+		text: string
+		kind: 'idea' | 'question'
+		connectTo?: string
+		connectLabel?: string
+	}[]
 ) =>
 	proposals.map((proposal, index) => ({
 		id: `idea-${index}`,
@@ -243,6 +283,30 @@ const ghostIdeas = (
 			: {}),
 	}))
 
+/** A board reading that contradicts anything asked of it: every idea the episode named has gone. */
+const emptyBoard: EpisodeValidity = {
+	centers: {},
+	influence: {},
+	gravity: {},
+	relationEnds: [],
+	radius: {},
+}
+
+/**
+ * A board reading that bears out `meaningful()` and the `c → d` rise beside it.
+ *
+ * Both pairs are still sitting at the influence the episode said they had risen to, and the
+ * notes are all still there — which is what a remark about them being drawn together needs in
+ * order to still be true.
+ */
+const intactBoard: EpisodeValidity = {
+	centers: { a: { x: 0, y: 0 }, b: { x: 0, y: 0 }, c: { x: 0, y: 0 }, d: { x: 0, y: 0 } },
+	influence: { [pairKey('a', 'b')]: 0.58, [pairKey('c', 'd')]: 0.7 },
+	gravity: {},
+	relationEnds: [],
+	radius: {},
+}
+
 /** Let all pending microtasks (awaited promises) settle. */
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
@@ -254,6 +318,7 @@ beforeEach(() => {
 	companionUtterance.set(null)
 	companionPacing.set({ idleMs: EPISODE_IDLE_MS, dropped: 0 })
 	companionFocus.set([])
+	companionQueue.set([])
 	groupingSuggestion.set(null)
 	ideaSuggestions.set([])
 	relationSuggestions.set([])
@@ -265,7 +330,7 @@ describe('createCompanion', () => {
 		const timer = controllableSchedule()
 		const { observer, calls } = fakeObserver()
 		const { voice, spoken } = fakeVoice()
-		createCompanion({ stream, observer, voice, schedule: timer.schedule })
+		createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 		stream.emit([meaningful()])
 		timer.flush()
@@ -288,7 +353,7 @@ describe('createCompanion', () => {
 		const timer = controllableSchedule()
 		const { observer, calls } = fakeObserver()
 		const { voice } = fakeVoice()
-		createCompanion({ stream, observer, voice, schedule: timer.schedule })
+		createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 		stream.emit([trivial()])
 		timer.flush()
@@ -302,7 +367,7 @@ describe('createCompanion', () => {
 		const timer = controllableSchedule()
 		const { observer, calls } = fakeObserver()
 		const { voice, spoken } = fakeVoice()
-		createCompanion({ stream, observer, voice, schedule: timer.schedule })
+		createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 		stream.emit([meaningful()])
 		timer.flush()
@@ -320,7 +385,7 @@ describe('createCompanion', () => {
 		const timer = controllableSchedule()
 		const { observer, calls } = fakeObserver()
 		const { voice, spoken } = fakeVoice()
-		createCompanion({ stream, observer, voice, schedule: timer.schedule })
+		createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 		stream.emit([meaningful()])
 		timer.flush()
@@ -337,7 +402,7 @@ describe('createCompanion', () => {
 		const timer = controllableSchedule()
 		const { observer, calls } = fakeObserver()
 		const { voice } = fakeVoice()
-		createCompanion({ stream, observer, voice, schedule: timer.schedule })
+		createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 		stream.emit([meaningful()])
 		timer.flush()
@@ -346,21 +411,25 @@ describe('createCompanion', () => {
 		expect(companionStage.get()).toBe('idle')
 	})
 
-	it('aborts an in-flight observation when a new episode arrives', () => {
+	it('queues a second episode rather than calling the first one off', () => {
 		const stream = createEventStream()
 		const timer = controllableSchedule()
 		const { observer, calls } = fakeObserver()
 		const { voice } = fakeVoice()
-		createCompanion({ stream, observer, voice, schedule: timer.schedule })
+		createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 		stream.emit([meaningful()])
 		timer.flush()
 		stream.emit([influence('c', 'd', 0.1, 0.7)])
 		timer.flush()
 
+		// Both are asked at once. The companion used to abort the first here, on the grounds
+		// that the canvas had moved on — which meant a burst of gestures produced one remark,
+		// about the last of them, and nothing about the rest.
 		expect(calls).toHaveLength(2)
-		expect(calls[0].signal?.aborted).toBe(true)
+		expect(calls[0].signal?.aborted).toBe(false)
 		expect(calls[1].signal?.aborted).toBe(false)
+		expect(companionQueue.get().map((thought) => thought.state)).toEqual(['thinking', 'thinking'])
 	})
 
 	it('passes recent comments to the observer so it can avoid repeating itself', async () => {
@@ -368,7 +437,7 @@ describe('createCompanion', () => {
 		const timer = controllableSchedule()
 		const { observer, calls } = fakeObserver()
 		const { voice } = fakeVoice()
-		createCompanion({ stream, observer, voice, schedule: timer.schedule })
+		createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 		stream.emit([meaningful()])
 		timer.flush()
@@ -384,31 +453,95 @@ describe('createCompanion', () => {
 	// The abort assertion alone passes even with the generation guard deleted, because a
 	// fake observer can ignore the signal — as a real one can, having already sent the
 	// request. This resolves the *superseded* call and proves its answer is discarded.
-	it('discards a superseded answer even if the abort is ignored', async () => {
+	// A queue is not a race. The second answer arriving first is the ordinary case — the
+	// requests are concurrent and the model is not — and the whole promise of speaking in
+	// gesture order rests on it waiting anyway.
+	it('speaks a burst in the order the gestures happened, not the order the answers arrive', async () => {
 		const stream = createEventStream()
 		const timer = controllableSchedule()
 		const { observer, calls } = fakeObserver()
 		const { voice, spoken } = fakeVoice()
-		createCompanion({ stream, observer, voice, schedule: timer.schedule })
+		createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 		stream.emit([meaningful()])
 		timer.flush()
 		stream.emit([influence('c', 'd', 0.1, 0.7)])
 		timer.flush()
 
-		// The stale call answers late, after the fresh episode already owns the loop.
-		calls[0].resolve({ speak: true, comment: 'about a canvas that has moved on' })
+		calls[1].resolve({ speak: true, comment: 'about the second gesture' })
+		await tick()
+
+		// Ready, and still waiting: the gesture before it has not been answered yet.
+		expect(spoken).toEqual([])
+		expect(companionQueue.get().map((thought) => thought.state)).toEqual(['thinking', 'ready'])
+
+		calls[0].resolve({ speak: true, comment: 'about the first gesture' })
+		await tick()
+
+		expect(spoken).toEqual(['about the first gesture', 'about the second gesture'])
+		expect(companionTranscript.get().map((entry) => entry.comment)).toEqual([
+			'about the first gesture',
+			'about the second gesture',
+		])
+		expect(companionQueue.get()).toEqual([])
+	})
+
+	it('gives up on a head that is still thinking long after the ones behind it are ready', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const clock = controllableClock()
+		const { observer, calls } = fakeObserver()
+		const { voice, spoken } = fakeVoice()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			schedule: timer.schedule,
+			now: clock.now,
+		})
+
+		stream.emit([meaningful()])
+		timer.flush()
+		stream.emit([influence('c', 'd', 0.1, 0.7)])
+		timer.flush()
+
+		// The observer's own ceiling is twenty seconds, which is the right patience for a lone
+		// request and far too much for one holding up a remark that is ready now.
+		clock.advance(HEAD_OF_LINE_MS + 1)
+		calls[1].resolve({ speak: true, comment: 'the one that was ready' })
+		await tick()
+
+		expect(spoken).toEqual(['the one that was ready'])
+		expect(calls[0].signal?.aborted).toBe(true)
+		expect(companionPacing.get().dropped).toBe(1)
+	})
+
+	it('discards the answer to a thought that has been dismissed', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer, calls } = fakeObserver()
+		const { voice, spoken } = fakeVoice()
+		const companion = createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			schedule: timer.schedule,
+		})
+
+		stream.emit([meaningful()])
+		timer.flush()
+		companion.cancelThought(companionQueue.get()[0].id)
+
+		// The real observer may well have sent the request already and answer anyway.
+		calls[0].resolve({ speak: true, comment: 'nobody asked for this any more' })
 		await tick()
 
 		expect(spoken).toEqual([])
 		expect(companionTranscript.get()).toEqual([])
-		// The fresh episode still owns the indicator and can still speak.
-		expect(companionStage.get()).not.toBe('idle')
-
-		calls[1].resolve({ speak: true, comment: 'about the canvas as it is now' })
-		await tick()
-
-		expect(spoken).toEqual(['about the canvas as it is now'])
+		// The user's own decision, so it says nothing about how long the pause should be.
+		expect(companionPacing.get().dropped).toBe(0)
 	})
 
 	it('keeps quiet when observation is switched off while it is thinking', async () => {
@@ -416,7 +549,7 @@ describe('createCompanion', () => {
 		const timer = controllableSchedule()
 		const { observer, calls } = fakeObserver()
 		const { voice, spoken } = fakeVoice()
-		createCompanion({ stream, observer, voice, schedule: timer.schedule })
+		createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 		stream.emit([meaningful()])
 		timer.flush()
@@ -434,7 +567,7 @@ describe('createCompanion', () => {
 		const timer = controllableSchedule()
 		const { voice, spoken } = fakeVoice()
 		const observer: ObserverClient = { observe: () => Promise.reject(new Error('502')) }
-		createCompanion({ stream, observer, voice, schedule: timer.schedule })
+		createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 		stream.emit([meaningful()])
 		timer.flush()
@@ -451,6 +584,7 @@ describe('createCompanion', () => {
 		const { observer, calls } = fakeObserver()
 		const voiceFake = fakeVoice()
 		const companion = createCompanion({
+			minDwellMs: 0,
 			stream,
 			observer,
 			voice: voiceFake.voice,
@@ -481,7 +615,14 @@ describe('createCompanion', () => {
 		const timer = controllableSchedule()
 		const { observer, calls } = fakeObserver()
 		const { voice } = fakeVoice()
-		createCompanion({ stream, observer, voice, schedule: timer.schedule, historySize: 2 })
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			schedule: timer.schedule,
+			historySize: 2,
+		})
 
 		stream.emit([meaningful()])
 		timer.flush()
@@ -507,7 +648,14 @@ describe('createCompanion', () => {
 			effectiveStrengths: [],
 			truncated: false,
 		}
-		createCompanion({ stream, observer, voice, schedule: timer.schedule, board: () => board })
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			schedule: timer.schedule,
+			board: () => board,
+		})
 
 		stream.emit([meaningful()])
 		timer.flush()
@@ -521,6 +669,7 @@ describe('createCompanion', () => {
 		const { observer, calls } = fakeObserver()
 		const { voice } = fakeVoice()
 		createCompanion({
+			minDwellMs: 0,
 			stream,
 			observer,
 			voice,
@@ -546,6 +695,7 @@ describe('createCompanion', () => {
 			const { voice, spoken } = fakeVoice()
 			const suggester = fakeSuggester()
 			createCompanion({
+				minDwellMs: 0,
 				stream,
 				observer,
 				voice,
@@ -582,6 +732,7 @@ describe('createCompanion', () => {
 			const { voice } = fakeVoice()
 			const suggester = fakeSuggester()
 			createCompanion({
+				minDwellMs: 0,
 				stream,
 				observer,
 				voice,
@@ -601,12 +752,12 @@ describe('createCompanion', () => {
 		})
 
 		it('does not consult the observer while a grouping suggestion is pending', () => {
-			groupingSuggestion.set({ generation: 1, members: ['a', 'b'], targets: [], rationale: 'x' })
+			groupingSuggestion.set({ members: ['a', 'b'], targets: [], rationale: 'x' })
 			const stream = createEventStream()
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
 			const { voice } = fakeVoice()
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 			stream.emit([meaningful()])
 			timer.flush()
@@ -621,6 +772,7 @@ describe('createCompanion', () => {
 			const { voice, spoken } = fakeVoice()
 			const suggester = fakeSuggester()
 			const companion = createCompanion({
+				minDwellMs: 0,
 				stream,
 				observer,
 				voice,
@@ -652,6 +804,7 @@ describe('createCompanion', () => {
 			const { voice, spoken } = fakeVoice()
 			const suggester = fakeSuggester()
 			const companion = createCompanion({
+				minDwellMs: 0,
 				stream,
 				observer,
 				voice,
@@ -670,7 +823,7 @@ describe('createCompanion', () => {
 			expect(companionStage.get()).toBe('idle')
 		})
 
-		it('comments on the board\'s new state when a grouping is accepted, and swallows its own move', async () => {
+		it("comments on the board's new state when a grouping is accepted, and swallows its own move", async () => {
 			const stream = createEventStream()
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
@@ -678,6 +831,7 @@ describe('createCompanion', () => {
 			const reflecter = fakeReflecter()
 			let applied = 0
 			const companion = createCompanion({
+				minDwellMs: 0,
 				stream,
 				observer,
 				voice,
@@ -691,7 +845,6 @@ describe('createCompanion', () => {
 			})
 
 			groupingSuggestion.set({
-				generation: 9,
 				members: ['a', 'b', 'c'],
 				targets: [
 					{ id: 'a', x: 0, y: 0 },
@@ -730,6 +883,7 @@ describe('createCompanion', () => {
 			const { voice, spoken } = fakeVoice()
 			const reflecter = fakeReflecter()
 			const companion = createCompanion({
+				minDwellMs: 0,
 				stream,
 				observer,
 				voice,
@@ -760,6 +914,7 @@ describe('createCompanion', () => {
 			const { voice, spoken } = fakeVoice()
 			const reflecter = fakeReflecter()
 			const companion = createCompanion({
+				minDwellMs: 0,
 				stream,
 				observer,
 				voice,
@@ -784,7 +939,7 @@ describe('createCompanion', () => {
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
 			const { voice } = fakeVoice()
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 			stream.emit([meaningful()])
 			timer.flush()
@@ -800,6 +955,7 @@ describe('createCompanion', () => {
 			const { voice } = fakeVoice()
 			const reflecter = fakeReflecter()
 			const companion = createCompanion({
+				minDwellMs: 0,
 				stream,
 				observer,
 				voice,
@@ -848,6 +1004,7 @@ describe('createCompanion', () => {
 			const { voice } = fakeVoice()
 			const reflecter = fakeReflecter()
 			const companion = createCompanion({
+				minDwellMs: 0,
 				stream,
 				observer,
 				voice,
@@ -891,6 +1048,7 @@ describe('createCompanion', () => {
 			const { voice } = fakeVoice()
 			const reflecter = fakeReflecter()
 			const companion = createCompanion({
+				minDwellMs: 0,
 				stream,
 				observer,
 				voice,
@@ -926,7 +1084,7 @@ describe('createCompanion', () => {
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
 			const { voice, plays } = fakeVoice({ manual: true })
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 			stream.emit([meaningful()])
 			timer.flush()
@@ -957,7 +1115,7 @@ describe('createCompanion', () => {
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
 			const { voice, plays } = fakeVoice({ manual: true })
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 			stream.emit([meaningful()])
 			timer.flush()
@@ -979,7 +1137,7 @@ describe('createCompanion', () => {
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
 			const { voice, plays } = fakeVoice({ manual: true })
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 			stream.emit([meaningful()])
 			timer.flush()
@@ -1002,7 +1160,7 @@ describe('createCompanion', () => {
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
 			const { voice } = fakeVoice({ manual: true })
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 			stream.emit([meaningful()])
 			timer.flush()
@@ -1021,7 +1179,7 @@ describe('createCompanion', () => {
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
 			const { voice } = brokenVoice()
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 			stream.emit([meaningful()])
 			timer.flush()
@@ -1037,12 +1195,13 @@ describe('createCompanion', () => {
 			])
 		})
 
-		it('stops the clip a newer remark supersedes', async () => {
+		it('lets a remark finish before the next one is even synthesised', async () => {
 			const stream = createEventStream()
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
 			const voiceFake = fakeVoice({ manual: true })
 			createCompanion({
+				minDwellMs: 0,
 				stream,
 				observer,
 				voice: voiceFake.voice,
@@ -1055,22 +1214,30 @@ describe('createCompanion', () => {
 			await tick()
 			voiceFake.plays[0].start()
 
-			// A newer episode takes over. Clearing the text is not enough: without stopping
-			// the audio the old clip carries on talking with nothing on screen behind it.
+			// A second gesture, answered while the first is still being spoken. The companion
+			// used to stop the clip here, because the newer thought had taken the voice; with a
+			// queue there is nothing to stop, because nothing else has asked for it.
 			stream.emit([influence('c', 'd', 0.1, 0.7)])
 			timer.flush()
+			calls[1].resolve({ speak: true, comment: 'The second remark.' })
+			await tick()
 
-			// Exactly once, and only because something was playing: a `stop()` on every
-			// episode would make this assertion pass without the behaviour existing.
-			expect(voiceFake.stopped).toBe(1)
+			expect(voiceFake.stopped).toBe(0)
+			expect(voiceFake.spoken).toEqual(['The first remark.'])
+			expect(companionUtterance.get()?.comment).toBe('The first remark.')
+
+			voiceFake.plays[0].finish()
+			await tick()
+
+			expect(voiceFake.spoken).toEqual(['The first remark.', 'The second remark.'])
 		})
 
-		it('ignores progress from a clip a newer episode has superseded', async () => {
+		it('ignores progress from a clip the remark after it has replaced', async () => {
 			const stream = createEventStream()
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
 			const { voice, plays } = fakeVoice({ manual: true })
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 			stream.emit([meaningful()])
 			timer.flush()
@@ -1078,93 +1245,67 @@ describe('createCompanion', () => {
 			await tick()
 			plays[0].start()
 
-			// A newer episode takes over while the first clip is still playing.
 			stream.emit([influence('c', 'd', 0.1, 0.7)])
 			timer.flush()
-			expect(companionStage.get()).not.toBe('idle')
+			calls[1].resolve({ speak: true, comment: 'The second remark.' })
+			await tick()
 
-			// The old clip's frames keep arriving until its audio is released. They must
-			// not put a stale sentence back on screen over the new thought.
+			plays[0].finish()
+			await tick()
+			plays[1].start()
+
+			expect(companionUtterance.get()?.comment).toBe('The second remark.')
+
+			// A released element can still deliver a frame or two. They must not put the
+			// finished sentence back on screen over the one now being spoken.
 			plays[0].progress(0.9)
 
-			expect(companionUtterance.get()).toBeNull()
-			expect(companionStage.get()).not.toBe('idle')
+			expect(companionUtterance.get()?.comment).toBe('The second remark.')
 		})
 	})
 
 	/**
-	 * The pause before a thought starts is a guess about the user's rhythm, and the ~4.7s
-	 * of model call and synthesis behind it is time the canvas can change out from under
-	 * the answer. These are the two halves of the response: kill the thought the moment
-	 * the user is back, and let the guess learn from having been wrong.
+	 * The queue is what the companion does instead of forgetting, and these are its edges: what
+	 * it keeps, what it lets go of at the door, and what any of that teaches the pause.
+	 *
+	 * The old answer to a user who came back mid-thought was to kill the thought. It is now to
+	 * keep it and ask, at the last moment silence is still free, whether it is worth saying.
 	 */
-	describe('pacing itself against the user', () => {
-		it('drops the thought the moment the user comes back, not when the next episode closes', () => {
+	describe('the queue', () => {
+		it('keeps a thought when the user comes back, instead of throwing it away', () => {
 			const stream = createEventStream()
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
 			const { voice } = fakeVoice()
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 			stream.emit([meaningful()])
 			timer.flush()
-			expect(companionStage.get()).toBe('observing')
-
-			// One event, no flush: the next episode is still being buffered. The old code
-			// waited for it to close before aborting, which left a stale answer free to
-			// arrive and be spoken over the gesture in progress.
+			// One event, no flush: the user is back and the next gesture is still being buffered.
+			// This used to abort the request outright.
 			stream.emit([influence('c', 'd', 0.1, 0.7)])
 
-			expect(calls[0].signal?.aborted).toBe(true)
-			expect(companionStage.get()).toBe('idle')
+			expect(calls[0].signal?.aborted).toBe(false)
+			expect(companionQueue.get()).toHaveLength(1)
+			expect(companionStage.get()).toBe('observing')
 		})
 
-		it('discards an answer that arrives after the user came back', async () => {
+		it('still speaks an answer the user came back before hearing', async () => {
 			const stream = createEventStream()
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
 			const { voice, spoken } = fakeVoice()
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
 			stream.emit([meaningful()])
 			timer.flush()
 			stream.emit([influence('c', 'd', 0.1, 0.7)])
 
-			// The real observer may well have sent the request already and answer anyway.
-			calls[0].resolve({ speak: true, comment: 'about a canvas that has moved on' })
+			calls[0].resolve({ speak: true, comment: 'Those two are converging.' })
 			await tick()
 
-			expect(spoken).toEqual([])
-			expect(companionTranscript.get()).toEqual([])
-			expect(companionStage.get()).toBe('idle')
-		})
-
-		it('abandons a remark whose voice has not arrived yet, but keeps the record of it', async () => {
-			const stream = createEventStream()
-			const timer = controllableSchedule()
-			const { observer, calls } = fakeObserver()
-			const { voice, plays } = fakeVoice({ manual: true })
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
-
-			stream.emit([meaningful()])
-			timer.flush()
-			calls[0].resolve({ speak: true, comment: 'A remark nobody will hear.' })
-			await tick()
-			expect(companionStage.get()).toBe('composing')
-
-			stream.emit([influence('c', 'd', 0.1, 0.7)])
-
-			expect(companionStage.get()).toBe('idle')
-
-			// Synthesis finishing after the fact must not put the sentence on screen: the
-			// canvas it described is gone. The transcript still has it, because that is the
-			// record of what the companion decided, not of what it managed to say.
-			plays[0].start()
-
-			expect(companionUtterance.get()).toBeNull()
-			expect(companionTranscript.get().map((entry) => entry.comment)).toEqual([
-				'A remark nobody will hear.',
-			])
+			expect(spoken).toEqual(['Those two are converging.'])
+			expect(companionPacing.get().dropped).toBe(0)
 		})
 
 		it('leaves a remark it has already begun speaking alone', async () => {
@@ -1173,6 +1314,7 @@ describe('createCompanion', () => {
 			const { observer, calls } = fakeObserver()
 			const voiceFake = fakeVoice({ manual: true })
 			createCompanion({
+				minDwellMs: 0,
 				stream,
 				observer,
 				voice: voiceFake.voice,
@@ -1194,84 +1336,326 @@ describe('createCompanion', () => {
 			expect(companionPacing.get().dropped).toBe(0)
 		})
 
-		it('carries the killed gesture forward, so the next remark describes the whole arc', () => {
+		it('drops a remark the board no longer bears out, without saying or recording it', async () => {
 			const stream = createEventStream()
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
-			const { voice } = fakeVoice()
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+			const { voice, spoken } = fakeVoice()
+			createCompanion({
+				minDwellMs: 0,
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+				// Every idea the episode named has gone from the board.
+				verify: () => emptyBoard,
+			})
 
-			stream.emit([influence('a', 'b', 0.04, 0.58)])
+			stream.emit([meaningful()])
 			timer.flush()
-			// The user resumes, killing that thought and pushing the pair further.
-			stream.emit([influence('a', 'b', 0.58, 0.9)])
-			timer.flush()
+			calls[0].resolve({ speak: true, comment: 'About two notes that no longer exist.' })
+			await tick()
 
-			// Not 0.58. The interrupted episode held the arc's starting point, and losing it
-			// would leave the observer describing the tail of a gesture as if it were all of it.
-			expect(calls[1].request.episode.pairs).toEqual([
-				{
-					source: 'a',
-					target: 'b',
-					before: { influence: 0.04 },
-					after: { influence: 0.9 },
-					transitions: ['influence_changed'],
-				},
-			])
+			expect(spoken).toEqual([])
+			// Recorded at the door rather than when the model answered, so a dropped remark
+			// never reaches the transcript — where the bar would show it and the next prompt
+			// would be told the companion had said it.
+			expect(companionTranscript.get()).toEqual([])
+			expect(companionPacing.get().dropped).toBe(1)
+			expect(companionQueue.get()).toEqual([])
 		})
 
-		it('keeps an open arc whole when the episode it merges into reads as trivial', () => {
+		it('drops a remark that has waited too long to be worth hearing', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const clock = controllableClock()
+			const { observer, calls } = fakeObserver()
+			const { voice, spoken } = fakeVoice()
+			createCompanion({
+				minDwellMs: 0,
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+				now: clock.now,
+			})
+
+			stream.emit([meaningful()])
+			timer.flush()
+			// Nothing about the episode has been contradicted; it is simply half a minute late,
+			// which is the rule the validity check cannot express because nothing records what
+			// the remark actually claimed.
+			clock.advance(MAX_REMARK_AGE_MS + 1)
+			calls[0].resolve({ speak: true, comment: 'True, and far too late.' })
+			await tick()
+
+			expect(spoken).toEqual([])
+			expect(companionPacing.get().dropped).toBe(1)
+		})
+
+		it('carries a gesture the queue had no room for into the next thought', () => {
 			const stream = createEventStream()
 			const timer = controllableSchedule()
 			const { observer, calls } = fakeObserver()
 			const { voice } = fakeVoice()
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
+			// Fill it. None of these answer, so every slot stays taken.
+			for (let i = 0; i < QUEUE_LIMIT; i += 1) {
+				stream.emit([influence(`s${i}`, `t${i}`, 0.04, 0.58)])
+				timer.flush()
+			}
+			expect(calls).toHaveLength(QUEUE_LIMIT)
+
+			// One gesture too many. The cap sits above the model call, not above the chip, so
+			// this costs nothing — and it is not lost either.
+			stream.emit([influence('a', 'b', 0.04, 0.58)])
+			timer.flush()
+			expect(calls).toHaveLength(QUEUE_LIMIT)
+
+			// A slot frees, and the overflow rides into the next thought rather than waiting
+			// for a gesture that may never come.
+			calls[0].resolve({ speak: false, comment: null })
+
+			return tick().then(() => {
+				expect(calls).toHaveLength(QUEUE_LIMIT + 1)
+				expect(calls[QUEUE_LIMIT].request.episode.pairs).toEqual([
+					{
+						source: 'a',
+						target: 'b',
+						before: { influence: 0.04 },
+						after: { influence: 0.58 },
+						transitions: ['influence_changed'],
+					},
+				])
+			})
+		})
+
+		it('keeps an open arc whole when the episode it merges into reads as trivial', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice } = fakeVoice()
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
+
+			for (let i = 0; i < QUEUE_LIMIT; i += 1) {
+				stream.emit([influence(`s${i}`, `t${i}`, 0.04, 0.58)])
+				timer.flush()
+			}
+
+			// Overflow opens an arc: this one had nowhere to go.
 			stream.emit([influence('a', 'b', 0.04, 0.58)])
 			timer.flush()
 
 			// The user comes back and undoes most of it, taking a node with them. Merged with
-			// the killed episode this nets out to almost nothing, so the local gate drops it —
-			// but dropping the *episode* must not drop the arc, or the move rides along in
-			// nothing and the eventual remark describes a canvas that never existed.
+			// the carried arc this nets out to almost nothing, so the local gate drops it — but
+			// dropping the *episode* must not drop the arc, or the move rides along in nothing
+			// and the eventual remark describes a canvas that never existed.
 			stream.emit([influence('a', 'b', 0.58, 0.06), moved('z')])
 			timer.flush()
-			expect(calls).toHaveLength(1)
+			expect(calls).toHaveLength(QUEUE_LIMIT)
 
+			calls[0].resolve({ speak: false, comment: null })
+			await tick()
 			stream.emit([influence('a', 'b', 0.06, 0.7)])
 			timer.flush()
 
-			expect(calls).toHaveLength(2)
-			expect(calls[1].request.episode.structural).toEqual([moved('z')])
-			expect(calls[1].request.episode.pairs[0].before).toEqual({ influence: 0.04 })
+			expect(calls).toHaveLength(QUEUE_LIMIT + 1)
+			expect(calls[QUEUE_LIMIT].request.episode.structural).toEqual([moved('z')])
+			expect(calls[QUEUE_LIMIT].request.episode.pairs[0].before).toEqual({ influence: 0.04 })
 		})
 
+		it('tells the observer what it is already about to say, so it does not say it twice', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice } = fakeVoice({ manual: true })
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
+
+			stream.emit([meaningful()])
+			timer.flush()
+			stream.emit([influence('c', 'd', 0.1, 0.7)])
+			timer.flush()
+
+			// Answered but not yet spoken, so the transcript — which is written at the door —
+			// knows nothing about it. Without the queue in `recentComments`, two concurrent
+			// requests would be handed identical history and could easily agree.
+			calls[1].resolve({ speak: true, comment: 'a remark waiting its turn' })
+			await tick()
+
+			stream.emit([influence('e', 'f', 0.1, 0.7)])
+			timer.flush()
+
+			expect(calls[2].request.recentComments).toEqual(['a remark waiting its turn'])
+		})
+
+		it('lets the words land one at a time when there is no voice to pace them', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const dwell = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice } = fakeVoice()
+			voiceEnabled.set(false)
+			createCompanion({
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+				delay: dwell.schedule,
+			})
+
+			stream.emit([meaningful()])
+			timer.flush()
+			stream.emit([influence('c', 'd', 0.1, 0.7)])
+			timer.flush()
+			calls[0].resolve({ speak: true, comment: 'first' })
+			calls[1].resolve({ speak: true, comment: 'second' })
+			await tick()
+
+			// With voice off, speaking costs nothing and returns at once. Without a floor the
+			// queue would empty inside a tick — two remarks in one frame, and slots freeing so
+			// fast that nothing throttles the observe rate behind them.
+			expect(companionTranscript.get().map((entry) => entry.comment)).toEqual(['first'])
+			expect(dwell.lastMs).toBe(MIN_DWELL_MS)
+
+			dwell.flush()
+			await tick()
+
+			expect(companionTranscript.get().map((entry) => entry.comment)).toEqual(['first', 'second'])
+		})
+
+		it('collects a remark left waiting behind a ghost nobody decided', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const wake = controllableSchedule()
+			const clock = controllableClock()
+			const { observer, calls } = fakeObserver()
+			const { voice, spoken } = fakeVoice()
+			createCompanion({
+				minDwellMs: 0,
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+				delay: wake.schedule,
+				now: clock.now,
+			})
+
+			stream.emit([meaningful()])
+			timer.flush()
+			calls[0].resolve({ speak: true, comment: 'A remark with a ghost in front of it.' })
+			// A proposal lands before it can be spoken. Never talking over a pending ghost is an
+			// invariant older than the queue, so it waits — but nothing is coming to wake it, and
+			// the age cap that is supposed to collect it is only read inside the pump.
+			groupingSuggestion.set({ members: ['a', 'b'], targets: [], rationale: 'grouped' })
+			await tick()
+
+			expect(spoken).toEqual([])
+			expect(wake.lastMs).toBe(MAX_REMARK_AGE_MS)
+
+			clock.advance(MAX_REMARK_AGE_MS + 1)
+			wake.flush()
+			await tick()
+
+			expect(spoken).toEqual([])
+			expect(companionTranscript.get()).toEqual([])
+			expect(companionQueue.get()).toEqual([])
+			expect(companionPacing.get().dropped).toBe(1)
+		})
+
+		it('speaks what was waiting once the ghost is decided', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice, spoken } = fakeVoice()
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
+
+			stream.emit([meaningful()])
+			timer.flush()
+			groupingSuggestion.set({ members: ['a', 'b'], targets: [], rationale: 'grouped' })
+			calls[0].resolve({ speak: true, comment: 'A remark with a ghost in front of it.' })
+			await tick()
+			expect(spoken).toEqual([])
+
+			// Dismissed from the controls, which only clear the atom — the companion watches for
+			// that rather than being told, since four different places can clear a ghost.
+			groupingSuggestion.set(null)
+			await tick()
+
+			expect(spoken).toEqual(['A remark with a ghost in front of it.'])
+		})
+
+		it('forgets the whole queue on teardown', () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const { observer, calls } = fakeObserver()
+			const { voice } = fakeVoice()
+			const { dispose } = createCompanion({
+				minDwellMs: 0,
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+			})
+
+			stream.emit([meaningful()])
+			timer.flush()
+			expect(companionQueue.get()).toHaveLength(1)
+
+			dispose()
+
+			expect(companionQueue.get()).toEqual([])
+			expect(calls[0].signal?.aborted).toBe(true)
+			expect(companionStage.get()).toBe('idle')
+		})
+	})
+
+	/**
+	 * The pause before a thought starts is a guess about one user's rhythm, and the ~4.7s of
+	 * model call and synthesis behind it is time the canvas can change out from under the
+	 * answer. Nothing is killed any more, so the guess learns from a narrower signal: a remark
+	 * the board turned out not to bear out, told by a user who came *straight* back after the
+	 * pause fired. Either half alone means something else — a prompt return whose remark still
+	 * held says the pause was fine, and a remark stale a minute later says the board moved on.
+	 */
+	describe('pacing itself against the user', () => {
 		it('stretches the pause past the rhythm that fooled it, then eases back', async () => {
 			const stream = createEventStream()
 			const timer = controllableSchedule()
 			const clock = controllableClock()
 			const { observer, calls } = fakeObserver()
 			const { voice } = fakeVoice()
-			createCompanion({ stream, observer, voice, schedule: timer.schedule, now: clock.now })
+			let stale = true
+			createCompanion({
+				minDwellMs: 0,
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+				now: clock.now,
+				verify: () => (stale ? emptyBoard : intactBoard),
+			})
 
 			stream.emit([meaningful()])
 			expect(timer.lastMs).toBe(EPISODE_IDLE_MS)
 
 			// The episode closes on schedule, and the user comes back half a second later —
-			// so 1.7s of quiet was not the end of anything.
+			// so 1.7s of quiet was not the end of anything. That only becomes evidence once
+			// the remark it produced turns out to be about a board that has moved on.
 			clock.advance(EPISODE_IDLE_MS)
 			timer.flush()
 			clock.advance(500)
 			stream.emit([influence('c', 'd', 0.1, 0.7)])
+			calls[0].resolve({ speak: true, comment: 'About a canvas that has moved on.' })
+			await tick()
 
-			// Past the 1.7s that fooled it, by the margin — and armed for the gesture in
-			// progress, not merely for the one after it.
+			// Past the 1.7s that fooled it, by the margin.
 			const stretched = EPISODE_IDLE_MS + 500 + IDLE_BACKOFF_MARGIN_MS
 			expect(companionPacing.get()).toEqual({ idleMs: stretched, dropped: 1 })
-			expect(timer.lastMs).toBe(stretched)
 
-			// This one lands: the longer pause was long enough, so half the penalty is
+			// The next one lands: the longer pause was long enough, so half the penalty is
 			// handed back rather than the companion staying cautious for the whole session.
+			stale = false
 			timer.flush()
 			calls[1].resolve({ speak: true, comment: 'This one lands.' })
 			await tick()
@@ -1279,20 +1663,63 @@ describe('createCompanion', () => {
 			expect(companionPacing.get().idleMs).toBe(EPISODE_IDLE_MS + (stretched - EPISODE_IDLE_MS) / 2)
 		})
 
-		it('never stretches past the ceiling', () => {
+		it('learns nothing from a thought the user was nowhere near', async () => {
 			const stream = createEventStream()
 			const timer = controllableSchedule()
 			const clock = controllableClock()
-			const { observer } = fakeObserver()
+			const { observer, calls } = fakeObserver()
 			const { voice } = fakeVoice()
-			createCompanion({ stream, observer, voice, schedule: timer.schedule, now: clock.now })
+			createCompanion({
+				minDwellMs: 0,
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+				now: clock.now,
+				verify: () => emptyBoard,
+			})
 
-			// A user arranging in bursts, interrupting every thought.
+			stream.emit([meaningful()])
+			clock.advance(EPISODE_IDLE_MS)
+			timer.flush()
+
+			// The board moved on — but not because the pause was short. The user wandered back
+			// a long while later, or something else took the notes away. The remark is dropped
+			// and the pause is left exactly where it was.
+			clock.advance(30_000)
+			stream.emit([influence('c', 'd', 0.1, 0.7)])
+			calls[0].resolve({ speak: true, comment: 'About a canvas that has moved on.' })
+			await tick()
+
+			expect(companionPacing.get()).toEqual({ idleMs: EPISODE_IDLE_MS, dropped: 1 })
+		})
+
+		it('never stretches past the ceiling', async () => {
+			const stream = createEventStream()
+			const timer = controllableSchedule()
+			const clock = controllableClock()
+			const { observer, calls } = fakeObserver()
+			const { voice } = fakeVoice()
+			createCompanion({
+				minDwellMs: 0,
+				stream,
+				observer,
+				voice,
+				schedule: timer.schedule,
+				now: clock.now,
+				verify: () => emptyBoard,
+			})
+
+			// A user arranging in bursts: every episode closes, the user is straight back on it,
+			// and every remark it produced lands on a board that has moved on.
 			for (let i = 0; i < 12; i += 1) {
+				stream.emit([influence('a', 'b', 0.04 + i / 100, 0.58 + i / 100)])
 				clock.advance(timer.lastMs)
 				timer.flush()
 				clock.advance(300)
-				stream.emit([influence('a', 'b', 0.04 + i / 100, 0.58 + i / 100)])
+				stream.emit([influence('a', 'b', 0.5, 0.9)])
+				calls[i].resolve({ speak: true, comment: `remark ${i}` })
+				await tick()
 			}
 
 			expect(companionPacing.get().idleMs).toBe(IDLE_BACKOFF_CAP_MS)
@@ -1304,10 +1731,10 @@ describe('createCompanion', () => {
 			const timer = controllableSchedule()
 			const { observer } = fakeObserver()
 			const { voice } = fakeVoice()
-			createCompanion({ stream, observer, voice, schedule: timer.schedule })
+			createCompanion({ minDwellMs: 0, stream, observer, voice, schedule: timer.schedule })
 
-			// The local gate dropped this one, so nothing was in flight to interrupt and the
-			// pause was never shown to be too short.
+			// The local gate dropped this one, so nothing was in flight and the pause was
+			// never shown to be too short.
 			stream.emit([trivial()])
 			timer.flush()
 			stream.emit([trivial()])
@@ -1315,18 +1742,20 @@ describe('createCompanion', () => {
 			expect(companionPacing.get()).toEqual({ idleMs: EPISODE_IDLE_MS, dropped: 0 })
 		})
 
-		it('resets the pacing readout on teardown', () => {
+		it('resets the pacing readout on teardown', async () => {
 			const stream = createEventStream()
 			const timer = controllableSchedule()
 			const clock = controllableClock()
-			const { observer } = fakeObserver()
+			const { observer, calls } = fakeObserver()
 			const { voice } = fakeVoice()
 			const { dispose } = createCompanion({
+				minDwellMs: 0,
 				stream,
 				observer,
 				voice,
 				schedule: timer.schedule,
 				now: clock.now,
+				verify: () => emptyBoard,
 			})
 
 			stream.emit([meaningful()])
@@ -1334,6 +1763,8 @@ describe('createCompanion', () => {
 			timer.flush()
 			clock.advance(500)
 			stream.emit([influence('c', 'd', 0.1, 0.7)])
+			calls[0].resolve({ speak: true, comment: 'About a canvas that has moved on.' })
+			await tick()
 			expect(companionPacing.get().dropped).toBe(1)
 
 			// A StrictMode remount must not inherit the last mount's rhythm.

@@ -15,11 +15,16 @@
  * The motion is `generative-loaders`' `InlineLoader`, which brings its own reduced-motion
  * handling and takes its colour from `currentColor` — so the loader is the field ink too,
  * the same voice that draws the contextual fields and the influence badges.
+ *
+ * It also names the gesture it is thinking about, now that there can be a queue behind it.
+ * `CompanionQueue` shows everything *after* the head and leaves the head to this, so without
+ * the name the one thought the user is actually waiting on would be the only unlabelled thing
+ * on screen.
  */
 import { useValue } from 'tldraw'
 import { InlineLoader } from 'generative-loaders'
-import { companionStage } from '@/companion/companionState'
-import { FIELD_INK, MONO, fieldTint, panelChrome } from '@/canvas/ui/theme'
+import { companionQueue, companionStage } from '@/companion/companionState'
+import { caption, FIELD_INK, MONO, fieldTint, panelChrome } from '@/canvas/ui/theme'
 
 const LABELS = {
 	observing: 'Agent thinking',
@@ -28,6 +33,7 @@ const LABELS = {
 
 export function AgentThinkingIndicator() {
 	const stage = useValue(companionStage)
+	const about = useValue(companionQueue)[0]?.gesture
 	if (stage === 'idle') return null
 
 	return (
@@ -51,6 +57,7 @@ export function AgentThinkingIndicator() {
 			    `aria-hidden` and the live region announces the label alone rather than both. */}
 			<InlineLoader variant="ripple" size={24} />
 			{LABELS[stage]}
+			{about && <span style={caption}>· {about}</span>}
 		</div>
 	)
 }
