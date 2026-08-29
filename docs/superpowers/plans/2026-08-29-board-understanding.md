@@ -1171,97 +1171,187 @@ git commit -m "feat(companion): add the digest client"
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `src/companion/companion.test.ts`, following the fake-client pattern already used there for `observer`/`suggest`/`reflect`. Add to that file's existing imports:
+Append to `src/companion/companion.test.ts`. That file has **no** shared harness helper — every test builds its own companion inline from `createEventStream()`, `controllableSchedule()`, `fakeObserver()` and `fakeVoice()`, then drives it with `stream.emit([...])`, `timer.flush()` and `await tick()`. Follow that idiom exactly; do not introduce a harness.
+
+Add to the file's existing imports:
 
 ```ts
 import { EMPTY_UNDERSTANDING } from '@/companion/digestClient'
-import { boardUnderstanding, companionQueue } from '@/companion/companionState'
+import type { BoardUnderstanding, DigestClient, DigestRequest } from '@/companion/digestClient'
+import { boardUnderstanding } from '@/companion/companionState'
 ```
+
+Add this fake beside `fakeReflecter`, whose deferred shape it copies:
+
+```ts
+/** A digest whose answer the test resolves. Nothing waits on it, but tests need its timing. */
+function fakeDigester() {
+	const calls: {
+		request: DigestRequest
+		resolve: (understanding: BoardUnderstanding) => void
+		reject: (error: Error) => void
+	}[] = []
+	const client: DigestClient = {
+		digest(request) {
+			return new Promise<BoardUnderstanding>((resolve, reject) => {
+				calls.push({ request, resolve, reject })
+			})
+		},
+	}
+	return { client, calls }
+}
+```
+
+Add `boardUnderstanding.set(null)` to the existing `beforeEach` block, beside the other atom resets. Then add the suite — `scatteredBoard` is the existing `BoardSummary` fixture in this file, with `nodeCount: 3`:
 
 ```ts
 describe('the standing understanding', () => {
-	it('derives once the board drifts past the threshold', async () => {
-		const digest = { digest: vi.fn().mockResolvedValue(EMPTY_UNDERSTANDING) }
-		const harness = createHarness({ digest })
+	it('derives once the board drifts past the threshold', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
 
 		// Two new notes is drift 6 — exactly the threshold.
-		harness.emit({ type: 'node_created', nodeId: 'a' })
-		harness.emit({ type: 'node_created', nodeId: 'b' })
-		await harness.settleEpisode()
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
 
-		expect(digest.digest).toHaveBeenCalledOnce()
-		harness.dispose()
+		expect(calls).toHaveLength(1)
 	})
 
-	it('does not derive for dragging, however much of it', async () => {
-		const digest = { digest: vi.fn().mockResolvedValue(EMPTY_UNDERSTANDING) }
-		const harness = createHarness({ digest })
+	it('does not derive for dragging, however much of it', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
 
 		for (let i = 0; i < 50; i++) {
-			harness.emit({
-				type: 'node_moved',
-				nodeId: 'a',
-				previous: { x: 0, y: 0 },
-				current: { x: i, y: i },
-			})
+			stream.emit([
+				{ type: 'node_moved', nodeId: 'a', previous: { x: 0, y: 0 }, current: { x: i, y: i } },
+			])
 		}
-		await harness.settleEpisode()
+		timer.flush()
 
-		expect(digest.digest).not.toHaveBeenCalled()
-		harness.dispose()
+		expect(calls).toHaveLength(0)
 	})
 
-	it('never puts a derivation in the thought queue', async () => {
-		const digest = { digest: vi.fn().mockResolvedValue(EMPTY_UNDERSTANDING) }
-		const harness = createHarness({ digest })
+	it('never puts a derivation in the thought queue', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
 
-		harness.emit({ type: 'node_created', nodeId: 'a' })
-		harness.emit({ type: 'node_created', nodeId: 'b' })
-		await harness.settleEpisode()
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
 
-		// A digest speaks to nobody; it must not take a speaking slot.
-		expect(companionQueue.get().some((t) => t.gesture.includes('digest'))).toBe(false)
-		harness.dispose()
+		// A digest speaks to nobody, so it must never take a speaking slot.
+		expect(companionQueue.get().some((thought) => thought.gesture.includes('digest'))).toBe(false)
 	})
 
-	it('keeps the previous understanding when a derivation fails', async () => {
-		const good = { ...EMPTY_UNDERSTANDING, reading: 'A board about why deals stall.' }
-		const digest = {
-			digest: vi.fn().mockResolvedValueOnce(good).mockRejectedValueOnce(new Error('502')),
-		}
-		const harness = createHarness({ digest })
+	it('keeps the previous understanding when a later derivation fails', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
 
-		harness.emit({ type: 'node_created', nodeId: 'a' })
-		harness.emit({ type: 'node_created', nodeId: 'b' })
-		await harness.settleEpisode()
-		harness.emit({ type: 'node_created', nodeId: 'c' })
-		harness.emit({ type: 'node_created', nodeId: 'd' })
-		await harness.settleEpisode()
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
+		calls[0].resolve({ ...EMPTY_UNDERSTANDING, reading: 'A board about why deals stall.' })
+		await tick()
+
+		stream.emit([
+			{ type: 'node_created', nodeId: 'c' },
+			{ type: 'node_created', nodeId: 'd' },
+		])
+		timer.flush()
+		calls[1].reject(new Error('502'))
+		await tick()
 
 		expect(boardUnderstanding.get()?.reading).toBe('A board about why deals stall.')
-		harness.dispose()
 	})
 
 	it('ships the understanding and its staleness to the observer', async () => {
-		const understanding = { ...EMPTY_UNDERSTANDING, reading: 'A board about why deals stall.' }
-		const digest = { digest: vi.fn().mockResolvedValue(understanding) }
-		const harness = createHarness({ digest })
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer, calls: observed } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
 
-		harness.emit({ type: 'node_created', nodeId: 'a' })
-		harness.emit({ type: 'node_created', nodeId: 'b' })
-		await harness.settleEpisode()
-		harness.emit({ type: 'node_created', nodeId: 'c' })
-		await harness.settleEpisode()
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
+		calls[0].resolve({ ...EMPTY_UNDERSTANDING, reading: 'A board about why deals stall.' })
+		await tick()
 
-		const request = harness.observer.observe.mock.calls.at(-1)![0]
+		stream.emit([{ type: 'node_created', nodeId: 'c' }])
+		timer.flush()
+
+		const request = observed.at(-1)!.request
 		expect(request.understanding?.reading).toBe('A board about why deals stall.')
 		expect(request.driftSince).toBeGreaterThan(0)
-		harness.dispose()
 	})
 })
 ```
-
-If `createHarness` does not already exist in `companion.test.ts`, use whatever fake-companion construction that file already uses and mirror it; do not introduce a second style.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
