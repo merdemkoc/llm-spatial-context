@@ -185,6 +185,42 @@ export function buildEpisodeSummary(events: SpatialEvent[]): EpisodeSummary {
 }
 
 /**
+ * Every node an episode mentions.
+ *
+ * Four readers want this and each used to fold it themselves: the chip that names a gesture,
+ * the highlight that lights up the notes a remark is about, the context reader that resolves
+ * ids to note text, and the validator that asks whether those ids still refer to anything.
+ * They must agree — a highlight over one set of notes and a validity check over another is
+ * two answers to the same question — so the fold lives once, here, beside the summary it reads.
+ *
+ * Relation endpoints are dug out of `previous` / `current` as well as the top level, because a
+ * rebound arrow names its old and new ends there and nowhere else.
+ */
+export function episodeNodes(summary: EpisodeSummary): NodeId[] {
+	const ids = new Set<NodeId>()
+
+	for (const pair of summary.pairs) {
+		ids.add(pair.source)
+		ids.add(pair.target)
+	}
+
+	for (const event of summary.structural) {
+		if ('nodeId' in event) ids.add(event.nodeId)
+		if ('source' in event) ids.add(event.source)
+		if ('target' in event) ids.add(event.target)
+		for (const side of ['previous', 'current'] as const) {
+			const value = (event as Record<string, unknown>)[side]
+			if (typeof value !== 'object' || value === null) continue
+			const { source, target } = value as { source?: NodeId; target?: NodeId }
+			if (source) ids.add(source)
+			if (target) ids.add(target)
+		}
+	}
+
+	return [...ids]
+}
+
+/**
  * The local significance gate.
  *
  * Any structural change other than a bare move — a relation created or removed, a field

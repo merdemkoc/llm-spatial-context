@@ -13,6 +13,7 @@ import { createEventStream } from '@/domain/eventStream'
 import {
 	buildEpisodeSummary,
 	createEpisodeRecorder,
+	episodeNodes,
 	EPISODE_IDLE_MS,
 	isTrivialEpisode,
 	type Schedule,
@@ -317,5 +318,46 @@ describe('createEpisodeRecorder', () => {
 		stream.emit([influence('a', 'b', 0.5, 0.6)])
 
 		expect(timer.lastMs).toBe(2600)
+	})
+})
+
+describe('episodeNodes', () => {
+	it('names every node a pair mentions', () => {
+		const summary = buildEpisodeSummary([influence('a', 'b', 0.04, 0.58)])
+
+		expect(episodeNodes(summary).sort()).toEqual(['a', 'b'])
+	})
+
+	it('names the ends of a relation as well as the node that moved', () => {
+		const summary = buildEpisodeSummary([
+			{ type: 'node_moved', nodeId: 'a', previous: { x: 0, y: 0 }, current: { x: 10, y: 0 } },
+			{ type: 'relation_created', relationId: 'r1', source: 'b', target: 'c', gravity: 1 },
+		])
+
+		expect(episodeNodes(summary).sort()).toEqual(['a', 'b', 'c'])
+	})
+
+	it('digs the old and new ends out of a rebound arrow', () => {
+		// A rebind names its endpoints nowhere else, so a fold that only read the top level
+		// would leave the notes it actually concerns out of the highlight and out of the check.
+		const summary = buildEpisodeSummary([
+			{
+				type: 'relation_rebound',
+				relationId: 'r1',
+				previous: { source: 'a', target: 'b' },
+				current: { source: 'a', target: 'c' },
+			},
+		])
+
+		expect(episodeNodes(summary).sort()).toEqual(['a', 'b', 'c'])
+	})
+
+	it('names each node once', () => {
+		const summary = buildEpisodeSummary([
+			influence('a', 'b', 0.04, 0.58),
+			influence('b', 'a', 0.04, 0.58),
+		])
+
+		expect(episodeNodes(summary).sort()).toEqual(['a', 'b'])
 	})
 })

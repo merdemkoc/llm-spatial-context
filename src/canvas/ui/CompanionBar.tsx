@@ -10,6 +10,9 @@
  *   nothing said yet → a resting label, so there is something to click
  *   model consulted  → the thinking indicator, unchanged
  *   has spoken       → the latest sentence, with the full transcript one click away
+ *
+ * What it is *about* to say is a separate row below, `CompanionQueue` — this chip is the one
+ * remark in the air, and the backlog behind it is a different question.
  */
 import { useState, type CSSProperties } from 'react'
 import { TextLoader } from 'generative-loaders'
@@ -67,8 +70,14 @@ export function CompanionBar() {
 			}}
 		>
 			{/* The thinking indicator replaces the chip rather than joining it: two lines
-				    about the same companion, stacked, was the old corner problem in miniature. */}
-			{stage !== 'idle' ? (
+				    about the same companion, stacked, was the old corner problem in miniature.
+
+				    A remark being spoken outranks it. The companion can now be saying one thing
+				    while it works out the next, and letting the hint win would blank the sentence
+				    mid-delivery — the word-by-word reveal would disappear exactly when the queue
+				    is deep enough to be worth watching. The orchestrator already derives the stage
+				    from the head alone for the same reason; this is the guard behind that. */}
+			{stage !== 'idle' && !utterance ? (
 				<AgentThinkingIndicator />
 			) : (
 				<TldrawUiPopover id="companion-transcript" onOpenChange={setIsShowingTranscript}>

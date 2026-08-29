@@ -9,7 +9,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { CompanionControls } from '@/canvas/ui/CompanionControls'
-import { observationEnabled, voiceEnabled } from '@/companion/companionState'
+import { followEnabled, observationEnabled, voiceEnabled } from '@/companion/companionState'
 
 declare global {
 	var IS_REACT_ACT_ENVIRONMENT: boolean
@@ -22,6 +22,7 @@ beforeEach(() => {
 	globalThis.IS_REACT_ACT_ENVIRONMENT = true
 	observationEnabled.set(true)
 	voiceEnabled.set(true)
+	followEnabled.set(true)
 	container = document.createElement('div')
 	document.body.append(container)
 	root = createRoot(container)
@@ -66,5 +67,15 @@ describe('CompanionControls', () => {
 		act(() => checkbox('Voice').click())
 
 		expect(voiceEnabled.get()).toBe(false)
+	})
+
+	it('turns following off when toggled', () => {
+		// The most assertive of the three, and the one most likely to be wanted off: it lets the
+		// companion move the board rather than merely talk about it.
+		render()
+
+		act(() => checkbox('Follow').click())
+
+		expect(followEnabled.get()).toBe(false)
 	})
 })

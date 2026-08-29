@@ -19,6 +19,7 @@ import { POST_IT_SHAPE_TYPE } from '@/canvas/shapes/postItShape'
 import { PostItStylePanel } from '@/canvas/ui/PostItStylePanel'
 import { InspectorDock } from '@/canvas/ui/InspectorDock'
 import { CompanionBar } from '@/canvas/ui/CompanionBar'
+import { CompanionQueue } from '@/canvas/ui/CompanionQueue'
 import { CanvasOverlays } from '@/canvas/ui/CanvasOverlays'
 import { CanvasControls } from '@/canvas/ui/CanvasControls'
 import { CanvasAiActions } from '@/canvas/ui/CanvasAiActions'
@@ -131,7 +132,13 @@ export const components: TLComponents = {
 	 */
 	TopPanel: () => (
 		<CenteredTopPanelContainer maxWidth={460}>
-			<CompanionBar />
+			<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 0 }}>
+				<CompanionBar />
+				{/* Under the bar rather than beside it: the bar is what the companion is saying,
+				    this is what it has yet to say, and stacking them keeps that reading. Renders
+				    nothing when there is no backlog, so the resting layout is unchanged. */}
+				<CompanionQueue />
+			</div>
 		</CenteredTopPanelContainer>
 	),
 

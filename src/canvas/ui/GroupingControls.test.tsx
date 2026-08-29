@@ -71,7 +71,6 @@ function render() {
 function propose() {
 	act(() =>
 		groupingSuggestion.set({
-			generation: 1,
 			members: ['a', 'b'],
 			targets: [
 				{ id: 'a', x: 0, y: 0 },

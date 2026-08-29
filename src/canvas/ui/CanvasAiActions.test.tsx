@@ -189,7 +189,7 @@ describe('CanvasAiActions', () => {
 	})
 
 	it('disables both actions while a grouping is pending', () => {
-		groupingSuggestion.set({ generation: 1, members: ['a', 'b'], targets: [], rationale: 'x' })
+		groupingSuggestion.set({ members: ['a', 'b'], targets: [], rationale: 'x' })
 		render()
 
 		expect(button('Suggest a grouping').disabled).toBe(true)

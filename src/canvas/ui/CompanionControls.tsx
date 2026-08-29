@@ -1,10 +1,15 @@
 /**
- * The AI companion's two switches, and the rhythm it has settled into.
+ * The AI companion's three switches, and the rhythm it has settled into.
  *
- * Two independent controls, per MVP-2: **AI observation** gates whether the model is
- * consulted at all, **Voice** gates only speech. They apply to the whole canvas rather
- * than to a selection, which is why they live with the other view switches in
- * `ViewSettingsPopover` and not in the style panel.
+ * Three independent controls: **AI observation** gates whether the model is consulted at
+ * all, **Voice** gates only speech, and **Follow** gates whether the canvas moves to
+ * whatever a remark is about. They apply to the whole canvas rather than to a selection,
+ * which is why they live with the other view switches in `ViewSettingsPopover` and not in
+ * the style panel.
+ *
+ * Follow is last because it is the most assertive: the other two decide whether the
+ * companion says anything, this one lets it move the board under your hands. A sentence can
+ * be ignored while you carry on working; a camera move cannot.
  *
  * Below them, a readout rather than a control: how long the canvas must now fall quiet
  * before the companion starts thinking, and how many thoughts it has thrown away because
@@ -16,12 +21,18 @@
  * Renders bare: the popover supplies the surface, the padding and the font.
  */
 import { useValue } from 'tldraw'
-import { companionPacing, observationEnabled, voiceEnabled } from '@/companion/companionState'
+import {
+	companionPacing,
+	followEnabled,
+	observationEnabled,
+	voiceEnabled,
+} from '@/companion/companionState'
 import { switchRow, checkbox, caption } from '@/canvas/ui/theme'
 
 export function CompanionControls() {
 	const observing = useValue(observationEnabled)
 	const voicing = useValue(voiceEnabled)
+	const following = useValue(followEnabled)
 	const pacing = useValue(companionPacing)
 
 	return (
@@ -43,6 +54,15 @@ export function CompanionControls() {
 					style={checkbox}
 				/>
 				Voice
+			</label>
+			<label style={switchRow}>
+				<input
+					type="checkbox"
+					checked={following}
+					onChange={(event) => followEnabled.set(event.target.checked)}
+					style={checkbox}
+				/>
+				Follow
 			</label>
 			{/* One decimal, because the pause moves in fractions of a second and rounding to
 			    whole ones would show it as stuck. The dropped count is omitted until there is
