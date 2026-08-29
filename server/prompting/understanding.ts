@@ -7,7 +7,15 @@
  * Staleness is stated, not merely tracked. A model told its context is old discounts it
  * correctly; a model shown stale context as fact does not, and this reading is out of date by
  * construction — it is derived every few changes, not every call.
+ *
+ * `UNDERSTANDING_TRIAGE` is emitted from here, not from the three system prompts. It used to
+ * live in each persona unconditionally, so an episode with no understanding at all was still
+ * told to judge the change against one — an instruction to compare against something is noise
+ * when there is nothing to compare against, and it measurably leaked into remarks on episodes
+ * that carried no understanding. Tying the instruction to the data means an agent that gets no
+ * understanding sees neither.
  */
+import { UNDERSTANDING_TRIAGE } from './fragments.ts'
 import type { BoardUnderstanding } from './types.ts'
 
 /** How the reading's age is phrased. Drift, not seconds: changes are what makes it wrong. */
@@ -36,6 +44,6 @@ export function renderUnderstanding(
 	if (narrative !== '') lines.push(`- The session so far: ${narrative}`)
 	for (const tension of tensions) lines.push(`- Still unresolved: ${tension}`)
 
-	lines.push('')
+	lines.push('', UNDERSTANDING_TRIAGE, '')
 	return lines
 }

@@ -12,6 +12,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { interpretDecision, renderEpisode, SILENCE, SYSTEM_PROMPT } from '../../server/prompt.ts'
+import { isCleanRemark } from '../../server/prompting/remark.ts'
 
 describe('renderEpisode', () => {
 	it('names ideas by their note text rather than their ids', () => {
@@ -189,6 +190,14 @@ describe('SYSTEM_PROMPT', () => {
 		// arguing against; an all-positive exemplar list biases toward speaking.
 		expect(SYSTEM_PROMPT).toContain('Episodes that warrant silence')
 	})
+
+	it('no longer carries the understanding triage unconditionally', () => {
+		// The triage is data-shaped now (see `renderEpisode with a standing understanding`
+		// below): present only when an understanding is actually supplied. Baking it into the
+		// persona meant every episode was told to compare against a reading it might not have.
+		expect(SYSTEM_PROMPT).not.toContain('Judge what just happened against it')
+		expect(SYSTEM_PROMPT).not.toContain('never itself a reason to speak')
+	})
 })
 
 describe('interpretDecision', () => {
@@ -244,6 +253,28 @@ describe('interpretDecision', () => {
 	})
 })
 
+describe('isCleanRemark', () => {
+	// Two real leaks pulled straight from an eval run: a well-formed sentence with a stray
+	// word glued on after its final full stop, no space. No brace, well under the length cap,
+	// so nothing else here caught either before the trailing-fragment rule was added.
+	it('rejects a remark trailing a triage word glued on with no space', () => {
+		const leaked =
+			"Pulling pricing away from SSO while the 'blocks' arrow stays put — the connection's now asserted despite the distance, worth noticing.contradicts"
+		expect(isCleanRemark(leaked)).toBe(false)
+	})
+
+	it('rejects a remark trailing a truncated word fragment', () => {
+		const leaked =
+			'That link finally bridges the two threads — pricing friction and onboarding friction may be the same stall in disguise.ed'
+		expect(isCleanRemark(leaked)).toBe(false)
+	})
+
+	it('accepts a clean remark ending in an ordinary sentence', () => {
+		const clean = "So pricing might not be the blocker at all — it's SSO underneath it."
+		expect(isCleanRemark(clean)).toBe(true)
+	})
+})
+
 const understanding = {
 	themes: [{ name: 'Deal friction', meaning: 'What stalls enterprise deals', members: ['a', 'b'] }],
 	reading: 'A board about why deals stall.',
@@ -283,16 +314,30 @@ describe('renderEpisode with a standing understanding', () => {
 		})
 		expect(rendered.indexOf('What the user did')).toBeLessThan(rendered.indexOf('Deal friction'))
 	})
-})
 
-describe('SYSTEM_PROMPT understanding triage', () => {
-	it('tells the observer how to judge a change against the standing reading', () => {
-		expect(SYSTEM_PROMPT).toContain('FITS')
-		expect(SYSTEM_PROMPT).toContain('EXTENDS')
-		expect(SYSTEM_PROMPT).toContain('CONTRADICTS')
+	// The triage used to live unconditionally in SYSTEM_PROMPT, so an episode with no
+	// understanding at all was still told to judge the change against one — nothing to
+	// compare against, and it leaked into remarks on exactly those episodes. It now travels
+	// with the data instead, via `renderUnderstanding`, so these assert the rendered output
+	// rather than the static prompt string.
+	it('judges the change against the understanding, lowercase so there is no shouted token to echo', () => {
+		const rendered = renderEpisode({ episode: { structural: [], pairs: [] }, understanding })
+		expect(rendered).toContain('The change fits the understanding')
+		expect(rendered).toContain('The change extends it')
+		expect(rendered).toContain('The change contradicts it')
+		expect(rendered).not.toContain('FITS')
+		expect(rendered).not.toContain('EXTENDS')
+		expect(rendered).not.toContain('CONTRADICTS')
 	})
 
 	it('forbids narrating the understanding back', () => {
-		expect(SYSTEM_PROMPT).toContain('never itself a reason to speak')
+		const rendered = renderEpisode({ episode: { structural: [], pairs: [] }, understanding })
+		expect(rendered).toContain('never itself a reason to speak')
+	})
+
+	it('gives no triage instruction at all when there is no understanding to judge against', () => {
+		const rendered = renderEpisode({ episode: { structural: [], pairs: [] } })
+		expect(rendered).not.toContain('never itself a reason to speak')
+		expect(rendered).not.toContain('Judge what just happened against it')
 	})
 })

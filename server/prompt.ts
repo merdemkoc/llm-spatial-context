@@ -11,7 +11,7 @@
  * constant here would bake the default and silently ignore `.env`.
  */
 import { boardLabels, named, renderRecentComments } from './prompting/boardRender.ts'
-import { CANVAS_PRIMER, UNDERSTANDING_TRIAGE } from './prompting/fragments.ts'
+import { CANVAS_PRIMER } from './prompting/fragments.ts'
 import { isCleanRemark } from './prompting/remark.ts'
 import { renderUnderstanding } from './prompting/understanding.ts'
 import type { BoardSummaryPayload, BoardUnderstanding, RelationContext } from './prompting/types.ts'
@@ -86,8 +86,6 @@ Episodes that warrant silence — this is what most of them look like:
 - a board rearranged in ways that change no proximity and no relation
 
 No preamble, no lists, no questions, no coaching or instructions — just a brief remark, as someone thinking alongside them.
-
-${UNDERSTANDING_TRIAGE}
 
 Return the structured decision: speak=true with your remark in "comment", or speak=false with an empty "comment".`
 

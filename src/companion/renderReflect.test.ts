@@ -278,4 +278,17 @@ describe('renderReflection with a standing understanding', () => {
 			'understood this board to be'
 		)
 	})
+
+	// The triage travels with the data (`renderUnderstanding`), not with the persona, so every
+	// consumer that is handed an understanding gets it and none that isn't ever sees it.
+	it('carries the fits/extends/contradicts triage whenever an understanding is supplied', () => {
+		const rendered = renderReflection({ board, persona: 'critique', understanding })
+		expect(rendered).toContain('never itself a reason to speak')
+	})
+
+	it('omits the triage entirely when there is no understanding', () => {
+		expect(renderReflection({ board, persona: 'critique' })).not.toContain(
+			'never itself a reason to speak'
+		)
+	})
 })

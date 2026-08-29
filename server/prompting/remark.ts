@@ -33,11 +33,23 @@ const LEAKED = [
 	'Here is the whole board',
 ]
 
+/**
+ * A sentence that ends, then keeps going in lowercase with no space.
+ *
+ * `isCleanRemark` used to miss a whole class of leak: a well-formed sentence with a stray
+ * word glued on after its final full stop — `"...worth noticing.contradicts"`,
+ * `"...in disguise.ed"`. No brace, well under the length cap, so nothing else here catches
+ * it. A real remark never ends mid-word right after a full stop; that shape is spillage,
+ * not prose, whatever caused it.
+ */
+const TRAILING_FRAGMENT = /[.!?][a-z]+$/
+
 /** True when `text` reads as a remark rather than as spillage. */
 export function isCleanRemark(text: string): boolean {
 	if (text.length > REMARK_HARD_LIMIT) return false
 	// Braces are never part of a spoken sentence about ideas, and they are the first thing to
 	// appear when the JSON boundary is what leaked.
 	if (/[{}]/.test(text)) return false
+	if (TRAILING_FRAGMENT.test(text)) return false
 	return !LEAKED.some((fragment) => text.includes(fragment))
 }

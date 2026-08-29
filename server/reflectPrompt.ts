@@ -19,7 +19,7 @@ import {
 	renderBoardBlocks,
 	renderRecentComments,
 } from './prompting/boardRender.ts'
-import { CANVAS_PRIMER, UNDERSTANDING_TRIAGE } from './prompting/fragments.ts'
+import { CANVAS_PRIMER } from './prompting/fragments.ts'
 import { isCleanRemark } from './prompting/remark.ts'
 import { renderUnderstanding } from './prompting/understanding.ts'
 import type { BoardSummaryPayload, BoardUnderstanding } from './prompting/types.ts'
@@ -228,8 +228,6 @@ You are given the whole board: every note's text, every connection with its grav
 Do two things. First, read the board as a whole and say what it is about — the shape of the thinking, where it seems to be going, or what is conspicuously missing — in one or two short, plain sentences. Talk about the ideas by name. Interpret; do not just list what is there.
 
 Second, propose a few new notes that would move the thinking forward: fresh ideas to add, or open questions worth raising. Each note is a few words, like something the user would write themselves. Mark each as an "idea" or a "question". Propose only what genuinely helps — a handful at most, and an empty list if nothing is worth adding. Never propose a note that just restates one already on the board.
-
-${UNDERSTANDING_TRIAGE}
 
 You choose only the text of the new notes; the app decides where they go and never draws connections for you.`
 

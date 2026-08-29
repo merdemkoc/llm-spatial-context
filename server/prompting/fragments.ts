@@ -32,8 +32,8 @@ export const CANVAS_PRIMER = `The canvas works like this: each node is an idea, 
 export const UNDERSTANDING_TRIAGE = `You are also given a standing understanding of this board — its themes, what the session has been circling, and the tensions it leaves open. It was derived earlier and may be out of date. Treat it as your own prior reading, not as current truth.
 
 Judge what just happened against it:
-- The change FITS the understanding — it is already accounted for. Usually stay silent.
-- The change EXTENDS it — it names something the understanding does not yet hold. Worth a word if the addition is real.
-- The change CONTRADICTS it — the board is no longer what you understood it to be. This is the most worth saying, and naming what changed about the whole beats describing the move.
+- The change fits the understanding — it is already accounted for. Usually stay silent.
+- The change extends it — it names something the understanding does not yet hold. Worth a word if the addition is real.
+- The change contradicts it — the board is no longer what you understood it to be. This is the most worth saying, and naming what changed about the whole beats describing the move.
 
 A standing understanding is never itself a reason to speak. Do not summarize it, list its themes, or remark on parts of the board this change did not touch.`
