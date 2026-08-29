@@ -68,6 +68,18 @@ function pair(
 	}
 }
 
+/** What the companion understands this board to be, for the two-layer fixtures. */
+const UNDERSTANDING = {
+	themes: [
+		{ name: 'Deal friction', meaning: 'What stalls enterprise deals', members: ['a', 'b'] },
+		{ name: 'Getting started', meaning: 'What new teams hit first', members: ['c', 'd'] },
+	],
+	reading: 'A board about why enterprise deals stall, and separately about onboarding.',
+	narrative: 'Started at pricing, kept returning to SSO, only lately looked at onboarding.',
+	tensions: ['Nothing yet connects the sales friction to the onboarding friction.'],
+	derivedFromNodes: ['a', 'b', 'c', 'd', 'e', 'f'],
+}
+
 export const FIXTURES: Fixture[] = [
 	// ───────────────────────── silent ─────────────────────────
 	{
@@ -350,6 +362,68 @@ export const FIXTURES: Fixture[] = [
 			context: ctx(),
 			board: BOARD,
 			recentComments: ['Onboarding and activation have settled into one theme.'],
+		},
+	},
+
+	// ─────────────────── two-layer: understanding + episode ───────────────────
+	{
+		name: 'fits-the-understanding',
+		expect: 'silent',
+		note: 'Pricing and SSO drawing closer is exactly what "Deal friction" already says. Accounted for.',
+		payload: {
+			episode: {
+				structural: [{ type: 'node_moved', nodeId: 'a' }],
+				pairs: [pair('a', 'b', 0.55, 0.68)],
+			},
+			context: ctx(),
+			board: BOARD,
+			understanding: UNDERSTANDING,
+			driftSince: 2,
+		},
+	},
+	{
+		name: 'contradicts-the-understanding',
+		expect: 'speak',
+		note: 'The two themes the reading held apart are now bridged. The understanding is wrong, which is the most worth saying.',
+		payload: {
+			episode: {
+				structural: [{ type: 'relation_created', source: 'a', target: 'c', gravity: 0.8 }],
+				pairs: [pair('a', 'c', 0.05, 0.62, ['proximity_changed:strong'])],
+			},
+			context: ctx(),
+			board: BOARD,
+			understanding: UNDERSTANDING,
+			driftSince: 3,
+		},
+	},
+	{
+		name: 'extends-the-understanding',
+		expect: 'speak',
+		note: 'A loner joins a named theme the reading did not have it in.',
+		payload: {
+			episode: {
+				structural: [{ type: 'node_moved', nodeId: 'e' }],
+				pairs: [pair('e', 'a', 0.03, 0.58, ['field_entered'])],
+			},
+			context: ctx(),
+			board: BOARD,
+			understanding: UNDERSTANDING,
+			driftSince: 1,
+		},
+	},
+	{
+		name: 'understanding-is-not-a-topic',
+		expect: 'silent',
+		note: 'A rich understanding plus a trivial nudge. The reading must not become something to talk about.',
+		payload: {
+			episode: {
+				structural: [{ type: 'node_moved', nodeId: 'f' }],
+				pairs: [pair('f', 'e', 0.31, 0.33)],
+			},
+			context: ctx(),
+			board: BOARD,
+			understanding: UNDERSTANDING,
+			driftSince: 9,
 		},
 	},
 ]

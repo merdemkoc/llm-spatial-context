@@ -45,7 +45,7 @@ graph TD
     grounding["<b>src/canvas/grounding/</b><br/>world ⇄ screenshot pixels"]
     ui["<b>src/canvas/ui/</b><br/>React panels + overlays"]
     companion["<b>src/companion/</b><br/>the observer's loop"]
-    server["<b>server/</b><br/>four routes, the API keys"]
+    server["<b>server/</b><br/>five routes, the API keys"]
     tldraw(["tldraw store<br/>single runtime store"])
 
     ui -->|imports| adapter
@@ -103,7 +103,7 @@ flowchart LR
     es --> elp["EventLogPanel · window.spatialEvents"]
     es --> rec["createEpisodeRecorder<br/>fold after an adaptive pause"]
     rec --> comp["createCompanion<br/>gate → observe → queue → speak"]
-    comp --> api(["server/ · observe · suggest · reflect · speak"])
+    comp --> api(["server/ · observe · suggest · reflect · digest · speak"])
     es -.->|"the user is back:<br/>note when, for the pacing policy"| comp
     comp -.->|"an overflowing gesture rides<br/>into the next episode"| rec
 ```
@@ -261,7 +261,7 @@ Subscribes to the [event stream](./README.md#event-stream), groups events into e
 | `voiceClient.ts`    | The seam to TTS: POST the text, play the returned audio, and report when playback starts, how far through it is, and — on every path, exactly once — that it is over                                                                                                                                             | `VoiceClient`, `SpeakOptions`, `createHttpVoiceClient`, `SPEAK_TIMEOUT_MS`                                                                                                                             |
 | `reveal.ts`         | Which words have been said at a given fraction of playback — position-weighted, since the mp3 carries no word timings                                                                                                                                                                                            | `spokenPrefix`                                                                                                                                                                                         |
 
-### `server/` — the four routes that hold the API keys
+### `server/` — the five routes that hold the API keys
 
 The repo was backend-free by design. This exists only because the companion calls two paid
 APIs and neither key may reach the browser. Every route **fails safe**: a bad body, a missing
@@ -270,26 +270,29 @@ empty reflection — rather than to an error at the user. Config is
 read _inside_ each function, never in a module constant — ESM evaluates these modules before
 `index.ts` calls `process.loadEnvFile()`, so a constant would bake the default and ignore `.env`.
 
-| File               | Responsibility                                                                                                                | Key exports                                                                               |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `index.ts`         | The Hono app — `/api/observe`, `/api/suggest`, `/api/reflect`, `/api/speak`, a 256 KB body cap on each, `dist/` in production | —                                                                                         |
-| `observe.ts`       | One episode in, a speak / stay-silent decision out                                                                            | `observe`, `ObserverDecision`                                                             |
-| `suggest.ts`       | The whole board in, a grouping proposal out                                                                                   | `suggest`                                                                                 |
-| `reflect.ts`       | The whole board in, a reading plus notes to add out                                                                           | `reflect`                                                                                 |
-| `prompt.ts`        | The observer's character — system prompt, decision schema, an episode as prose, and the verdict read back                     | `SYSTEM_PROMPT`, `DECISION_SCHEMA`, `renderEpisode`, `interpretDecision`, `observerModel` |
-| `suggestPrompt.ts` | The suggester's character, request rendering, and the validation that drops hallucinated ids                                  | `SUGGEST_SYSTEM_PROMPT`, `renderSuggestRequest`, `interpretGrouping`                      |
-| `reflectPrompt.ts` | The reflection's character and its persona registry — the one place a lens is defined, `impact` included                      | `REFLECT_SYSTEM_PROMPT`, `REFLECT_PERSONAS`, `renderReflection`, `interpretReflection`    |
-| `speak.ts`         | Text-to-speech; mp3 bytes back, capped at `MAX_SPEAK_CHARS`                                                                   | `synthesize`, `MAX_SPEAK_CHARS`                                                           |
+| File               | Responsibility                                                                                                                                                                       | Key exports                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `index.ts`         | The Hono app — `/api/observe`, `/api/suggest`, `/api/reflect`, `/api/digest`, `/api/speak`, a 256 KB body cap on each, `dist/` in production                                         | —                                                                                                       |
+| `observe.ts`       | One episode in, a speak / stay-silent decision out                                                                                                                                   | `observe`, `ObserverDecision`                                                                           |
+| `suggest.ts`       | The whole board in, a grouping proposal out                                                                                                                                          | `suggest`                                                                                               |
+| `reflect.ts`       | The whole board in, a reading plus notes to add out                                                                                                                                  | `reflect`                                                                                               |
+| `digest.ts`        | The whole board in, a standing understanding out — themes, a reading, a session narrative, open tensions. Speaks to nobody; only ever stored                                         | `digest`                                                                                                |
+| `prompt.ts`        | The observer's character — system prompt, decision schema, an episode as prose, and the verdict read back                                                                            | `SYSTEM_PROMPT`, `DECISION_SCHEMA`, `renderEpisode`, `interpretDecision`, `observerModel`               |
+| `suggestPrompt.ts` | The suggester's character, request rendering, and the validation that drops hallucinated ids                                                                                         | `SUGGEST_SYSTEM_PROMPT`, `renderSuggestRequest`, `interpretGrouping`                                    |
+| `reflectPrompt.ts` | The reflection's character and its persona registry — the one place a lens is defined, `impact` included                                                                             | `REFLECT_SYSTEM_PROMPT`, `REFLECT_PERSONAS`, `renderReflection`, `interpretReflection`                  |
+| `digestPrompt.ts`  | The digest's character and the harder validation its answer needs, since it is stored and reused rather than spoken once — a hallucinated theme must not name notes that don't exist | `DIGEST_SYSTEM_PROMPT`, `DIGEST_SCHEMA`, `renderDigestRequest`, `interpretUnderstanding`, `digestModel` |
+| `speak.ts`         | Text-to-speech; mp3 bytes back, capped at `MAX_SPEAK_CHARS`                                                                                                                          | `synthesize`, `MAX_SPEAK_CHARS`                                                                         |
 
 Three agents that once each carried their own copy of the asking now share it:
 
-| File                          | Responsibility                                                                                                              | Key exports                                                         |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `prompting/callStructured.ts` | The one SDK call. Structured output, **adaptive thinking**, and the fallback whenever an answer can't be trusted            | `callStructured`, `MAX_TOKENS`                                      |
-| `prompting/boardRender.ts`    | A board written for a model — one `named()` where there were three, and the block format the suggester and reflection share | `named`, `renderBoardBlocks`, `renderRecentComments`, `boardLabels` |
-| `prompting/fragments.ts`      | Prompt paragraphs more than one agent needs, so a missing rule looks missing                                                | `CANVAS_PRIMER`                                                     |
-| `prompting/remark.ts`         | Is this actually a remark? The second layer against scaffolding leaking into spoken text                                    | `isCleanRemark`, `REMARK_HARD_LIMIT`                                |
-| `prompting/types.ts`          | The payload shapes the browser POSTs                                                                                        | `BoardSummaryPayload`, `RelationContext`                            |
+| File                          | Responsibility                                                                                                                                                                          | Key exports                                                         |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `prompting/callStructured.ts` | The one SDK call. Structured output, **adaptive thinking**, and the fallback whenever an answer can't be trusted                                                                        | `callStructured`, `MAX_TOKENS`                                      |
+| `prompting/boardRender.ts`    | A board written for a model — one `named()` where there were three, and the block format the suggester and reflection share                                                             | `named`, `renderBoardBlocks`, `renderRecentComments`, `boardLabels` |
+| `prompting/fragments.ts`      | Prompt paragraphs more than one agent needs, so a missing rule looks missing                                                                                                            | `CANVAS_PRIMER`                                                     |
+| `prompting/remark.ts`         | Is this actually a remark? The second layer against scaffolding leaking into spoken text                                                                                                | `isCleanRemark`, `REMARK_HARD_LIMIT`                                |
+| `prompting/types.ts`          | The payload shapes the browser POSTs                                                                                                                                                    | `BoardSummaryPayload`, `RelationContext`                            |
+| `prompting/understanding.ts`  | One renderer for the standing understanding, shared by the observer, the suggester and the reflection, so all three read it in the same words and are told the same way how stale it is | `renderUnderstanding`                                               |
 
 > **Thinking is on, deliberately.** It was disabled to save latency until the eval showed what
 > that cost: structured output constrains generation to valid JSON, so reasoning the model

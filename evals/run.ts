@@ -28,6 +28,9 @@ try {
 /** The observer's own style rule, measured rather than enforced. */
 const REMARK_CHAR_TARGET = 140
 
+/** Theme names the observer must not simply read back. */
+const THEME_NAMES = ['Deal friction', 'Getting started']
+
 interface Trial {
 	fixture: Fixture
 	spoke: boolean
@@ -98,6 +101,9 @@ async function main() {
 	const latencies = usable.map((t) => t.ms).sort((a, b) => a - b)
 	const lengths = usable.filter((t) => t.spoke).map((t) => t.comment.length)
 	const overTarget = lengths.filter((n) => n > REMARK_CHAR_TARGET).length
+	const narrated = usable.filter(
+		(t) => t.spoke && THEME_NAMES.some((n) => t.comment.includes(n))
+	).length
 
 	const pct = (n: number, of: number) =>
 		of === 0 ? '  n/a' : `${((100 * n) / of).toFixed(0).padStart(3)}%`
@@ -129,6 +135,9 @@ async function main() {
 				`   over ${REMARK_CHAR_TARGET}: ${overTarget}/${lengths.length}`
 		)
 	}
+	console.log(
+		`narrated a theme      ${narrated}/${usable.filter((t) => t.spoke).length}   <- must stay 0`
+	)
 	console.log('──────────────────────────────────────────────')
 }
 
