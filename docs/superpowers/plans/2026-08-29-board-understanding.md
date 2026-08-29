@@ -605,10 +605,14 @@ export function interpretUnderstanding(
 			const name = cleanText(entry?.name)
 			const meaning = cleanText(entry?.meaning)
 			if (name === '') return null
-			const members = Array.isArray(entry?.members)
+			// Narrowed off an explicitly `unknown` local, not off an optional chain on an
+			// `any`: the latter loses the element type through the spread and fails tsc with
+			// "Type 'unknown[]' is not assignable to type 'string[]'".
+			const rawMembers: unknown = entry?.members
+			const members = Array.isArray(rawMembers)
 				? [
 						...new Set(
-							entry.members.filter(
+							rawMembers.filter(
 								(id: unknown): id is string => typeof id === 'string' && known.has(id)
 							)
 						),
