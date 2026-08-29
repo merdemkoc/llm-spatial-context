@@ -10,7 +10,13 @@
  * `process.loadEnvFile()` in its own body, but ESM evaluates this module first, so a
  * constant here would bake the default and silently ignore `.env`.
  */
-import { boardLabels, named, renderRecentComments } from './prompting/boardRender.ts'
+import {
+	boardLabels,
+	named,
+	proximityPairs,
+	realClusters,
+	renderRecentComments,
+} from './prompting/boardRender.ts'
 import { CANVAS_PRIMER } from './prompting/fragments.ts'
 import { isCleanRemark } from './prompting/remark.ts'
 import { renderUnderstanding } from './prompting/understanding.ts'
@@ -225,7 +231,10 @@ function renderBoard(board: BoardSummaryPayload, labels: Record<string, string>)
 	const showing = board.truncated ? ` (naming the first ${nodes.length})` : ''
 	lines.push(`- ${count} ${count === 1 ? 'idea' : 'ideas'} on the canvas${showing}.`)
 
-	const clusters = (board.clusters ?? []).filter((cluster) => (cluster.members ?? []).length >= 2)
+	// Shared with the suggester and the reflection (`prompting/boardRender.ts`), which is why
+	// these read as calls rather than an inline filter/map: the mechanics of "which clusters
+	// count" and "how a proximity pair is named" only ever need to agree once.
+	const clusters = realClusters(board)
 	if (clusters.length > 0) {
 		const groups = clusters.map((cluster) =>
 			(cluster.members ?? []).map((id) => ideaName(id, labels)).join(', ')
@@ -238,12 +247,8 @@ function renderBoard(board: BoardSummaryPayload, labels: Record<string, string>)
 		lines.push(`- Ideas standing alone: ${loners.map((id) => ideaName(id, labels)).join(', ')}.`)
 	}
 
-	const proximities = board.proximities ?? []
-	if (proximities.length > 0) {
-		const pairs = proximities.map(
-			(pair) => `${ideaName(pair.source, labels)} & ${ideaName(pair.target, labels)}`
-		)
-		lines.push(`- Notably close: ${pairs.join('; ')}.`)
+	if ((board.proximities ?? []).length > 0) {
+		lines.push(`- Notably close: ${proximityPairs(board, labels, { maxLength: NAME_MAX })}.`)
 	}
 
 	lines.push('')

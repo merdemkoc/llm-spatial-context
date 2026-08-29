@@ -72,6 +72,7 @@ import type { EpisodeContext, ObserverClient } from '@/companion/observerClient'
 import type { GroupingProposal, SuggestClient } from '@/companion/suggestClient'
 import type { IdeaProposal, ReflectClient, Reflection } from '@/companion/reflectClient'
 import type { VoiceClient } from '@/companion/voiceClient'
+import { isBlankUnderstanding } from '@/companion/digestClient'
 import type { BoardUnderstanding, DigestClient } from '@/companion/digestClient'
 import {
 	describeGesture,
@@ -363,6 +364,8 @@ export function createCompanion({
 	let understanding: BoardUnderstanding | null = null
 	let drift = DRIFT_THRESHOLD
 	let deriving = false
+	/** Aborts the in-flight derivation, if any — the digest's own `inFlight`, for `dispose`. */
+	let deriveController: AbortController | null = null
 	/** The in-flight request of whichever direct thought is thinking, so a newer one supersedes it. */
 	let inFlight: AbortController | null = null
 	/** Cancels the pump's own wake-up, when it is waiting on nothing but the clock. */
@@ -494,22 +497,37 @@ export function createCompanion({
 	 * Re-read the whole board in the background.
 	 *
 	 * Off the queue and off the critical path: a digest speaks to nobody, so it must never take
-	 * a speaking slot or make a remark wait. A failure leaves the previous understanding and the
-	 * drift score alone, so the next episode simply tries again.
+	 * a speaking slot or make a remark wait. A transport failure — cancelled, timed out,
+	 * rejected — leaves the previous understanding and the drift score alone, so the next
+	 * episode simply tries again. A *resolved* answer is a different case: the route fails safe,
+	 * so a broken digest (no key, a rejected request, output that didn't parse) still resolves
+	 * with HTTP 200 and an empty understanding. `isBlankUnderstanding` catches that — a blank
+	 * answer keeps the reading already held rather than overwriting a good one with nothing.
 	 */
 	const derive = async (boardSummary: BoardSummary) => {
 		if (!digest || deriving) return
 		deriving = true
+		// Captured before the await, which can run up to `DIGEST_TIMEOUT_MS`: this is the drift
+		// this derivation is actually answering for. Drift that arrives during the round trip
+		// describes changes the snapshot above never saw, so it must survive whatever this
+		// derivation decides — only the portion spent gets reset, not the running total.
+		const spent = drift
+		deriveController = new AbortController()
 		try {
-			const next = await digest.digest({ board: boardSummary, recentComments: recentComments() })
+			const next = await digest.digest(
+				{ board: boardSummary, recentComments: recentComments() },
+				deriveController.signal
+			)
 			if (disposed) return
+			drift = Math.max(0, drift - spent)
+			if (understanding && isBlankUnderstanding(next)) return
 			understanding = next
 			boardUnderstanding.set(next)
-			drift = 0
 		} catch {
 			// Keep what we had. A stale reading is better than none, and better than a wrong one.
 		} finally {
 			deriving = false
+			deriveController = null
 		}
 	}
 
@@ -1287,6 +1305,8 @@ export function createCompanion({
 		for (const thought of queue) thought.controller.abort()
 		inFlight?.abort()
 		inFlight = null
+		deriveController?.abort()
+		deriveController = null
 		queue = []
 		carried = []
 		// Abort only cancels a request; a clip already speaking has to be silenced, or the

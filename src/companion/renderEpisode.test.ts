@@ -13,6 +13,7 @@
 import { describe, expect, it } from 'vitest'
 import { interpretDecision, renderEpisode, SILENCE, SYSTEM_PROMPT } from '../../server/prompt.ts'
 import { isCleanRemark } from '../../server/prompting/remark.ts'
+import { renderUnderstanding } from '../../server/prompting/understanding.ts'
 
 describe('renderEpisode', () => {
 	it('names ideas by their note text rather than their ids', () => {
@@ -273,6 +274,15 @@ describe('isCleanRemark', () => {
 		const clean = "So pricing might not be the blocker at all — it's SSO underneath it."
 		expect(isCleanRemark(clean)).toBe(true)
 	})
+
+	// The original rule (`/[.!?][a-z]+$/`) also rejected this: a single lowercase letter after
+	// the stop is exactly what a legitimate abbreviation looks like, not just a leak. Both
+	// leaks above are two letters or more, so requiring `{2,}` still catches them and only
+	// widens the accepted case to a one-letter tail.
+	it('accepts a remark ending in an abbreviation rather than a leak', () => {
+		const clean = "They're wrapping up by 3p.m"
+		expect(isCleanRemark(clean)).toBe(true)
+	})
 })
 
 const understanding = {
@@ -304,6 +314,20 @@ describe('renderEpisode with a standing understanding', () => {
 	it('omits the section entirely when there is no understanding', () => {
 		const rendered = renderEpisode({ episode: { structural: [], pairs: [] } })
 		expect(rendered).not.toContain('understood this board to be')
+	})
+
+	// The undefined case above is what a fresh mount looks like; this is what a *resolved*
+	// digest that read nothing looks like — the exact shape the server's fail-safe 200 returns
+	// (see `server/index.ts` and `isBlankUnderstanding`). Both must render as no context at all,
+	// or a blank reading would still narrate itself into the prompt as "What you understood
+	// this board to be: (nothing)".
+	it('renders nothing for a present-but-entirely-empty understanding', () => {
+		expect(
+			renderUnderstanding(
+				{ themes: [], reading: '', narrative: '', tensions: [], derivedFromNodes: [] },
+				0
+			)
+		).toEqual([])
 	})
 
 	it('places the understanding after the change, so the change stays the subject', () => {

@@ -42,6 +42,26 @@ export const EMPTY_UNDERSTANDING: BoardUnderstanding = {
 	derivedFromNodes: [],
 }
 
+/**
+ * A 200 carrying nothing.
+ *
+ * The server's routes fail safe: a missing key, a rejected request, output that didn't
+ * parse all degrade to this exact shape rather than an error, so a 200 with nothing in it is
+ * indistinguishable from a genuine reading of a genuinely empty board. `derivedFromNodes` is
+ * left out of the check on purpose — it is bookkeeping, not content, and a real understanding
+ * could in principle carry none. Mirrors the guard at `server/prompting/understanding.ts`,
+ * which exists so this same empty shape never gets rendered into a prompt as fact; this is
+ * the client-side twin, which exists so it never overwrites a good reading either.
+ */
+export function isBlankUnderstanding(understanding: BoardUnderstanding): boolean {
+	return (
+		understanding.themes.length === 0 &&
+		understanding.reading === '' &&
+		understanding.narrative === '' &&
+		understanding.tensions.length === 0
+	)
+}
+
 /** What the browser POSTs: the whole board, and what the companion has said this session. */
 export interface DigestRequest {
 	board: BoardSummary

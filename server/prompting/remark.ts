@@ -41,8 +41,13 @@ const LEAKED = [
  * `"...in disguise.ed"`. No brace, well under the length cap, so nothing else here catches
  * it. A real remark never ends mid-word right after a full stop; that shape is spillage,
  * not prose, whatever caused it.
+ *
+ * `{2,}` rather than `+`: a single stray letter after the stop is also how a legitimate
+ * abbreviation ends — "...wrapping up by 3p.m" reads as a full stop followed by one lowercase
+ * letter and would otherwise be rejected alongside the real leaks. Both leaks above are two
+ * letters or more, so the abbreviation is the only case this widens.
  */
-const TRAILING_FRAGMENT = /[.!?][a-z]+$/
+const TRAILING_FRAGMENT = /[.!?][a-z]{2,}$/
 
 /** True when `text` reads as a remark rather than as spillage. */
 export function isCleanRemark(text: string): boolean {

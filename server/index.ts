@@ -3,11 +3,12 @@
  *
  * The repo was backend-free by design; this is its first server, and it exists only
  * because the AI companion must keep two API keys off the browser. It does two things:
- * proxy `/api/observe` and `/api/speak` to the models (keys read from the environment),
- * and, in production, serve the built client from `dist/`. In development the client is
- * served by Vite, which proxies `/api` here — so this process only handles the two routes.
+ * proxy `/api/observe`, `/api/suggest`, `/api/reflect`, `/api/digest` and `/api/speak` to
+ * the models (keys read from the environment), and, in production, serve the built client
+ * from `dist/`. In development the client is served by Vite, which proxies `/api` here —
+ * so this process only handles these five routes.
  *
- * `.env` is loaded before anything that reads it. Both handlers read their config inside
+ * `.env` is loaded before anything that reads it. Every handler reads its config inside
  * the call for the same reason: ESM evaluates imported modules before this file's body.
  */
 import { serve } from '@hono/node-server'
@@ -34,7 +35,7 @@ const { synthesize } = await import('./speak.ts')
 const app = new Hono()
 
 /**
- * A cap on both routes.
+ * A cap on every route.
  *
  * Each request costs real money at a paid API, and the episode is caller-supplied, so an
  * unbounded body is an unbounded bill. Generous enough for the largest real episode.

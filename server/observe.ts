@@ -2,7 +2,7 @@
  * The observe endpoint's brain: one episode in, a speak/stay-silent decision out.
  *
  * Runs server-side so the Anthropic key never reaches the browser. The asking is shared
- * with its two siblings (`prompting/callStructured.ts`); what is left here is this agent's
+ * with its three siblings (`prompting/callStructured.ts`); what is left here is this agent's
  * own configuration — which model, which persona, how to render the question, and that an
  * untrustworthy answer means silence.
  */

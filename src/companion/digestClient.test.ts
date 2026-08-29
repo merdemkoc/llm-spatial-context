@@ -6,7 +6,11 @@
  * companion would then carry around as fact.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { createHttpDigestClient, EMPTY_UNDERSTANDING } from '@/companion/digestClient'
+import {
+	createHttpDigestClient,
+	EMPTY_UNDERSTANDING,
+	isBlankUnderstanding,
+} from '@/companion/digestClient'
 
 const board = {
 	nodeCount: 0,
@@ -55,5 +59,15 @@ describe('createHttpDigestClient', () => {
 		const result = await createHttpDigestClient().digest({ board, recentComments: [] })
 		expect(result).toEqual({ ...EMPTY_UNDERSTANDING, reading: 'Just a reading.' })
 		vi.unstubAllGlobals()
+	})
+})
+
+describe('isBlankUnderstanding', () => {
+	it('is true for the empty shape a fail-safe 200 returns', () => {
+		expect(isBlankUnderstanding(EMPTY_UNDERSTANDING)).toBe(true)
+	})
+
+	it('is false once any field carries real content', () => {
+		expect(isBlankUnderstanding({ ...EMPTY_UNDERSTANDING, reading: 'A board.' })).toBe(false)
 	})
 })

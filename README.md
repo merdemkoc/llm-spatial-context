@@ -4,7 +4,7 @@ An experiment in giving an LLM **grounded spatial context** about a [tldraw](htt
 
 On top of that model sits the part the rest of it was for: an [AI companion](#the-ai-companion) that watches the representation change, groups the changes into episodes, and speaks only when it judges one worth remarking on.
 
-Built on tldraw, Vite, React 19 and TypeScript, with a two-route Hono server for the companion's model and voice calls.
+Built on tldraw, Vite, React 19 and TypeScript, with a five-route Hono server for the companion's model and voice calls.
 
 ![The canvas with contextual-field overlays, influence badges, and the live canonical-JSON inspector](docs/images/inspector-hero.png)
 
@@ -633,11 +633,24 @@ Six things about it are worth knowing:
 ## Layout
 
 ```
-server/                        Two routes, so the API keys never reach the browser
-  index.ts                     Hono app — /api/observe, /api/speak, dist/ in production
+server/                        Five routes, so the API keys never reach the browser
+  index.ts                     Hono app — five routes under /api, dist/ in production
   observe.ts                   One episode in, a speak / stay-silent decision out
-  prompt.ts                    The system prompt, the decision schema, episode → prose
+  suggest.ts                   The whole board in, a grouping proposal out
+  reflect.ts                   The whole board in, a reading plus notes to add out
+  digest.ts                    The whole board in, a standing understanding out — stored, never spoken
+  prompt.ts                    The observer's system prompt, decision schema, episode → prose
+  suggestPrompt.ts             The suggester's character, request rendering, hallucination guard
+  reflectPrompt.ts             The reflection's character and its persona registry
+  digestPrompt.ts              The digest's character and its harder validation
   speak.ts                     Text-to-speech synthesis
+  prompting/                   What the four structured agents share
+    callStructured.ts  The one SDK call — structured output, adaptive thinking, fallback
+    boardRender.ts     A board written for a model, shared by the suggester + reflection
+    fragments.ts       Prompt paragraphs more than one agent needs
+    remark.ts          Is this actually a remark? The leak-catching second layer
+    types.ts           The payload shapes the browser POSTs
+    understanding.ts   One renderer for the standing understanding, shared by all three
 src/
   main.tsx                     React entry point
   App.tsx                      Thin shell, renders <Canvas />
@@ -775,7 +788,7 @@ Test files (`*.test.ts`, `*.test.tsx`) sit next to the code they cover and are l
 | Real editor        | `adapter/{editor,relationEditor,spatialEvents,episodeValidity}.test.ts`, `dev/seedScenario.test.ts`, `grounding/groundedExport.test.ts`, `companion/{companion,voiceClient}.test.ts`                                                                                    | `jsdom`                    |
 | Rendered component | `ui/*.test.tsx`                                                                                                                                                                                                                                                         | `jsdom`                    |
 
-The companion needs no network, no clock and no audio device to be tested: `createCompanion` takes an `ObserverClient`, a `VoiceClient` and a `Schedule`, so every branch of the loop — silence, voice off, observation off, interruption, anti-repetition, the text/voice handover — is driven through fakes. `renderEpisode` is tested from the client side even though it lives in `server/` (imported by relative path, since Vite's `@` alias doesn't cover it), because what the model is _told_ is as much a decision as what it is asked: a payload rendered as opaque shape ids still produces a fluent remark, just a meaningless one. The two routes themselves have no tests — what is left of them after the prompt is the SDK.
+The companion needs no network, no clock and no audio device to be tested: `createCompanion` takes an `ObserverClient`, a `VoiceClient` and a `Schedule`, so every branch of the loop — silence, voice off, observation off, interruption, anti-repetition, the text/voice handover — is driven through fakes. `renderEpisode` is tested from the client side even though it lives in `server/` (imported by relative path, since Vite's `@` alias doesn't cover it), because what the model is _told_ is as much a decision as what it is asked: a payload rendered as opaque shape ids still produces a fluent remark, just a meaningless one. The five routes themselves have no tests — what is left of them after the prompt is the SDK.
 
 The default environment is `node`; the DOM suites opt in with a `@vitest-environment jsdom` docblock. That keeps the pure layer honest: `src/domain`, `src/canvas/adapter` and `postItShape.ts` import tldraw for _types only_, and adding a runtime tldraw import to any of them will break it.
 
