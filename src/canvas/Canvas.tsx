@@ -16,6 +16,7 @@ import { createHttpObserverClient } from '@/companion/observerClient'
 import { createHttpSuggestClient } from '@/companion/suggestClient'
 import { createHttpReflectClient } from '@/companion/reflectClient'
 import { createHttpVoiceClient } from '@/companion/voiceClient'
+import { createHttpDigestClient } from '@/companion/digestClient'
 import {
 	acceptGrouping,
 	cancelThought,
@@ -47,6 +48,9 @@ function handleMount(editor: Editor) {
 		voice: createHttpVoiceClient(),
 		suggest: createHttpSuggestClient(),
 		reflect: createHttpReflectClient(),
+		// Re-reads the whole board every few material changes and keeps the result, so the other
+		// three agents are given what the board *is* alongside what just happened.
+		digest: createHttpDigestClient(),
 		// Resolves the episode's node ids to the notes' own text, plus the relations that
 		// already exist, so the observer can talk about ideas rather than shape ids.
 		context: (summary) => readEpisodeContext(editor, summary),

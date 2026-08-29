@@ -29,7 +29,10 @@ import type { ObserveRequest, ObserverClient, ObserverDecision } from '@/compani
 import type { GroupingProposal, SuggestClient, SuggestRequest } from '@/companion/suggestClient'
 import type { Reflection, ReflectClient, ReflectRequest } from '@/companion/reflectClient'
 import type { VoiceClient } from '@/companion/voiceClient'
+import { EMPTY_UNDERSTANDING } from '@/companion/digestClient'
+import type { BoardUnderstanding, DigestClient, DigestRequest } from '@/companion/digestClient'
 import {
+	boardUnderstanding,
 	companionFocus,
 	companionPacing,
 	companionQueue,
@@ -260,6 +263,23 @@ function fakeReflecter() {
 	return { client, calls }
 }
 
+/** A digest whose answer the test resolves. Nothing waits on it, but tests need its timing. */
+function fakeDigester() {
+	const calls: {
+		request: DigestRequest
+		resolve: (understanding: BoardUnderstanding) => void
+		reject: (error: Error) => void
+	}[] = []
+	const client: DigestClient = {
+		digest(request) {
+			return new Promise<BoardUnderstanding>((resolve, reject) => {
+				calls.push({ request, resolve, reject })
+			})
+		},
+	}
+	return { client, calls }
+}
+
 /** Turn proposals into ghost ideas the way the adapter would — index-keyed, lined up. */
 const ghostIdeas = (
 	proposals: {
@@ -322,6 +342,7 @@ beforeEach(() => {
 	groupingSuggestion.set(null)
 	ideaSuggestions.set([])
 	relationSuggestions.set([])
+	boardUnderstanding.set(null)
 })
 
 describe('createCompanion', () => {
@@ -1772,5 +1793,152 @@ describe('createCompanion', () => {
 
 			expect(companionPacing.get()).toEqual({ idleMs: EPISODE_IDLE_MS, dropped: 0 })
 		})
+	})
+})
+
+describe('the standing understanding', () => {
+	it('derives once the board drifts past the threshold', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		// Two new notes is drift 6 — exactly the threshold.
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
+
+		expect(calls).toHaveLength(1)
+	})
+
+	it('does not derive for dragging, however much of it', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		for (let i = 0; i < 50; i++) {
+			stream.emit([
+				{ type: 'node_moved', nodeId: 'a', previous: { x: 0, y: 0 }, current: { x: i, y: i } },
+			])
+		}
+		timer.flush()
+
+		expect(calls).toHaveLength(0)
+	})
+
+	it('never puts a derivation in the thought queue', () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
+
+		// A digest speaks to nobody, so it must never take a speaking slot.
+		expect(companionQueue.get().some((thought) => thought.gesture.includes('digest'))).toBe(false)
+	})
+
+	it('keeps the previous understanding when a later derivation fails', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
+		calls[0].resolve({ ...EMPTY_UNDERSTANDING, reading: 'A board about why deals stall.' })
+		await tick()
+
+		stream.emit([
+			{ type: 'node_created', nodeId: 'c' },
+			{ type: 'node_created', nodeId: 'd' },
+		])
+		timer.flush()
+		calls[1].reject(new Error('502'))
+		await tick()
+
+		expect(boardUnderstanding.get()?.reading).toBe('A board about why deals stall.')
+	})
+
+	it('ships the understanding and its staleness to the observer', async () => {
+		const stream = createEventStream()
+		const timer = controllableSchedule()
+		const { observer, calls: observed } = fakeObserver()
+		const { voice } = fakeVoice()
+		const { client: digest, calls } = fakeDigester()
+		createCompanion({
+			minDwellMs: 0,
+			stream,
+			observer,
+			voice,
+			digest,
+			board: () => scatteredBoard,
+			schedule: timer.schedule,
+		})
+
+		stream.emit([
+			{ type: 'node_created', nodeId: 'a' },
+			{ type: 'node_created', nodeId: 'b' },
+		])
+		timer.flush()
+		calls[0].resolve({ ...EMPTY_UNDERSTANDING, reading: 'A board about why deals stall.' })
+		await tick()
+
+		stream.emit([{ type: 'node_created', nodeId: 'c' }])
+		timer.flush()
+
+		const request = observed.at(-1)!.request
+		expect(request.understanding?.reading).toBe('A board about why deals stall.')
+		expect(request.driftSince).toBeGreaterThan(0)
 	})
 })

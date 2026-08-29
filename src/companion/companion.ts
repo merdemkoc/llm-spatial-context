@@ -54,6 +54,8 @@ import {
 	buildEpisodeSummary,
 	createEpisodeRecorder,
 	createIdleBackoff,
+	driftOf,
+	DRIFT_THRESHOLD,
 	episodeNodes,
 	EPISODE_BUFFER_LIMIT,
 	EPISODE_IDLE_MS,
@@ -70,6 +72,7 @@ import type { EpisodeContext, ObserverClient } from '@/companion/observerClient'
 import type { GroupingProposal, SuggestClient } from '@/companion/suggestClient'
 import type { IdeaProposal, ReflectClient, Reflection } from '@/companion/reflectClient'
 import type { VoiceClient } from '@/companion/voiceClient'
+import type { BoardUnderstanding, DigestClient } from '@/companion/digestClient'
 import {
 	describeGesture,
 	insertByPriority,
@@ -83,6 +86,7 @@ import {
 	type ThoughtState,
 } from '@/companion/thoughtQueue'
 import {
+	boardUnderstanding,
 	companionFocus,
 	companionPacing,
 	companionQueue,
@@ -239,6 +243,11 @@ export interface CompanionOptions {
 	 * the write reaches the canvas.
 	 */
 	createAgentRelations?: (relations: { from: NodeId; to: NodeId; label?: string }[]) => number
+	/**
+	 * The board digest. Optional: without it the companion runs exactly as it did before, with
+	 * no standing understanding in any prompt.
+	 */
+	digest?: DigestClient
 }
 
 /** The running companion. `dispose` tears it down; the rest are the canvas AI controls' handles. */
@@ -329,6 +338,7 @@ export function createCompanion({
 	planIdeas,
 	createAgentNotes,
 	createAgentRelations,
+	digest,
 }: CompanionOptions): Companion {
 	/** Oldest turn first. The head is the only thought that may speak. */
 	let queue: QueuedThought[] = []
@@ -349,6 +359,10 @@ export function createCompanion({
 	let agentEditUntil = 0
 	// When the last proactive proposal was made, for the cooldown between them.
 	let lastProactiveAt = 0
+	/** What the companion understands the board to be, and how far the board has moved since. */
+	let understanding: BoardUnderstanding | null = null
+	let drift = DRIFT_THRESHOLD
+	let deriving = false
 	/** The in-flight request of whichever direct thought is thinking, so a newer one supersedes it. */
 	let inFlight: AbortController | null = null
 	/** Cancels the pump's own wake-up, when it is waiting on nothing but the clock. */
@@ -474,6 +488,29 @@ export function createCompanion({
 	const record = (comment: string) => {
 		const next = [...companionTranscript.get(), { comment, at: now() }]
 		companionTranscript.set(next.slice(-TRANSCRIPT_LIMIT))
+	}
+
+	/**
+	 * Re-read the whole board in the background.
+	 *
+	 * Off the queue and off the critical path: a digest speaks to nobody, so it must never take
+	 * a speaking slot or make a remark wait. A failure leaves the previous understanding and the
+	 * drift score alone, so the next episode simply tries again.
+	 */
+	const derive = async (boardSummary: BoardSummary) => {
+		if (!digest || deriving) return
+		deriving = true
+		try {
+			const next = await digest.digest({ board: boardSummary, recentComments: recentComments() })
+			if (disposed) return
+			understanding = next
+			boardUnderstanding.set(next)
+			drift = 0
+		} catch {
+			// Keep what we had. A stale reading is better than none, and better than a wrong one.
+		} finally {
+			deriving = false
+		}
 	}
 
 	/**
@@ -797,6 +834,8 @@ export function createCompanion({
 					context: context?.(thought.summary!) ?? EMPTY_CONTEXT,
 					recentComments: recentComments(),
 					board: boardSummary,
+					understanding: understanding ?? undefined,
+					driftSince: drift,
 				},
 				thought.controller.signal
 			)
@@ -867,7 +906,14 @@ export function createCompanion({
 		let proposal: GroupingProposal | null = null
 		try {
 			proposal = await suggest.suggest(
-				{ board: boardSummary, trigger, recentComments: recentComments(), intent },
+				{
+					board: boardSummary,
+					trigger,
+					recentComments: recentComments(),
+					intent,
+					understanding: understanding ?? undefined,
+					driftSince: drift,
+				},
 				thought.controller.signal
 			)
 		} catch {
@@ -906,7 +952,13 @@ export function createCompanion({
 		let reflection: Reflection | null = null
 		try {
 			reflection = await reflect.reflect(
-				{ board: boardSummary, persona, recentComments: recentComments() },
+				{
+					board: boardSummary,
+					persona,
+					recentComments: recentComments(),
+					understanding: understanding ?? undefined,
+					driftSince: drift,
+				},
 				thought.controller.signal
 			)
 		} catch {
@@ -960,7 +1012,13 @@ export function createCompanion({
 		let reflection: Reflection | null = null
 		try {
 			reflection = await reflect.reflect(
-				{ board: boardSummary, recentChange, recentComments: recentComments() },
+				{
+					board: boardSummary,
+					recentChange,
+					recentComments: recentComments(),
+					understanding: understanding ?? undefined,
+					driftSince: drift,
+				},
 				thought.controller.signal
 			)
 		} catch {
@@ -992,6 +1050,10 @@ export function createCompanion({
 		const keep = () => {
 			carried = events.slice(-EPISODE_BUFFER_LIMIT)
 		}
+
+		// Accumulated before the trivial gate below: a note created in an otherwise quiet
+		// episode still changes what the board is about, even if it says nothing worth speaking.
+		drift += driftOf(events)
 
 		if (!observationEnabled.get() || isTrivialEpisode(summary)) {
 			// Nothing is sent, so nothing is spent. A lone trivial episode is noise and is
@@ -1029,6 +1091,12 @@ export function createCompanion({
 			})
 		)
 		void think(thought)
+
+		// Free, local, and above the model call — the same shape as `isTrivialEpisode`.
+		const boardSummary = board?.()
+		if (digest && boardSummary && boardSummary.nodeCount >= 3 && drift >= DRIFT_THRESHOLD) {
+			void derive(boardSummary)
+		}
 	}
 
 	/**

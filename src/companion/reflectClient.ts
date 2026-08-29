@@ -7,6 +7,7 @@
  * that holds the API key. A sibling of `observerClient` and `suggestClient`.
  */
 import type { BoardSummary, NodeId } from '@/domain'
+import type { BoardUnderstanding } from '@/companion/digestClient'
 
 /** One proposed new note: its text, kind, and optionally an existing note it connects to. */
 export interface IdeaProposal {
@@ -44,6 +45,10 @@ export interface ReflectRequest {
 	persona?: string
 	/** What the companion recently said, so a reading can vary from itself. */
 	recentComments?: string[]
+	/** The companion's standing reading of the board. Absent until the first digest returns. */
+	understanding?: BoardUnderstanding
+	/** How much the board has drifted since that reading was taken. */
+	driftSince?: number
 }
 
 export interface ReflectClient {

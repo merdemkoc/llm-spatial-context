@@ -10,6 +10,7 @@
  * A sibling of `observerClient`, down to the abort/timeout handling.
  */
 import type { BoardSummary, NodeId } from '@/domain'
+import type { BoardUnderstanding } from '@/companion/digestClient'
 
 /** What the model returns, resolved for the client: which ideas to cluster, and why. */
 export interface GroupingProposal {
@@ -27,6 +28,10 @@ export interface SuggestRequest {
 	recentComments: string[]
 	/** The user's grouping intent from the on-demand prompt. Absent for proactive grouping. */
 	intent?: string
+	/** The companion's standing reading of the board. Absent until the first digest returns. */
+	understanding?: BoardUnderstanding
+	/** How much the board has drifted since that reading was taken. */
+	driftSince?: number
 }
 
 export interface SuggestClient {
