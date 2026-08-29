@@ -28,6 +28,7 @@ try {
 const { observe } = await import('./observe.ts')
 const { suggest } = await import('./suggest.ts')
 const { reflect } = await import('./reflect.ts')
+const { digest } = await import('./digest.ts')
 const { synthesize } = await import('./speak.ts')
 
 const app = new Hono()
@@ -71,6 +72,18 @@ app.post('/api/reflect', limit, async (c) => {
 		console.error('[reflect] failed:', error)
 		// Fail safe, like the other routes: a broken reflection is an empty one.
 		return c.json({ comment: '', ideas: [] })
+	}
+})
+
+app.post('/api/digest', limit, async (c) => {
+	try {
+		const payload = await c.req.json()
+		return c.json(await digest(payload))
+	} catch (error) {
+		console.error('[digest] failed:', error)
+		// Fail safe, like the other routes: a broken digest is nothing understood, which the
+		// client keeps out of every prompt rather than injecting as fact.
+		return c.json({ themes: [], reading: '', narrative: '', tensions: [], derivedFromNodes: [] })
 	}
 })
 
