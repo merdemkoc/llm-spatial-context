@@ -1,9 +1,9 @@
 # Codemap
 
 A file-by-file map of `llm-spatial-context`, for anyone — human or model — who needs to
-find where something lives before changing it. This is the **where**; the
-[`README.md`](./README.md) is the **why**. When a table entry raises a "but why is it done
-that way?", the linked README section answers it.
+find where something lives before changing it. This is the **where**. The
+[`README.md`](./README.md) is the overview, [`docs/why.md`](./docs/why.md) is the argument
+behind the prototype, and [Key invariants](#key-invariants) below lists the rules the code keeps.
 
 ## How to read this
 
@@ -407,6 +407,7 @@ Three layers, because the pure layer alone shipped two bugs it couldn't see. See
 
 ## See also
 
-- [`README.md`](./README.md) — the rationale behind every decision above, with the extension
-  recipes ([Where to add things](./README.md#where-to-add-things)) and known trade-offs
+- [`README.md`](./README.md) is the overview: how to run it, the extension recipes
+  ([Where to add things](./README.md#where-to-add-things)) and the known trade-offs
   ([Known limitations](./README.md#known-limitations)).
+- [`docs/why.md`](./docs/why.md) is the research note behind the prototype.
