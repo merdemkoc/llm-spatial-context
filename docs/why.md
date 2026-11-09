@@ -1,8 +1,8 @@
 # The Representation Is the Interface
 
-_A research note on why this prototype exists._ It is about intent, not implementation — the
-[README](../README.md) documents the system that was actually built, and
-[`CODEMAP.md`](../CODEMAP.md) says where each piece of it lives.
+_A research note on why this prototype exists._ It is about intent, not implementation. The
+[README](../README.md) is the short version, and [`CODEMAP.md`](../CODEMAP.md) documents the
+system that was actually built and where each piece of it lives.
 
 This didn't arrive out of nowhere. I have been reading about representation and testing ideas with
 small prototypes for a while — particularly how people represent complex problems, what role spatial
@@ -255,11 +255,11 @@ says which label is which id:
 ```
 
 One note on counting, because it is the first thing that looks like a contradiction: this note
-describes **three** kinds of evidence, while the README documents
-[four layers of context](../README.md#four-layers-of-context). Both are right. Grounding is not a
-fourth signal about meaning — it is an index from the representation into screenshot pixels, and it
-gets its own layer precisely because it speaks in a different coordinate system from the other
-three.
+describes **three** kinds of evidence, while the canonical document has
+[four layers of context](../CODEMAP.md#the-four-layers-of-context). Both are right. Grounding is
+not a fourth signal about meaning. It is an index from the representation into screenshot pixels,
+and it gets its own layer precisely because it speaks in a different coordinate system from the
+other three.
 
 ### What the Gemini tests showed — an informal observation
 
