@@ -68,7 +68,8 @@ graph TD
 ```
 
 `src/companion/` imports `@/domain` and nothing from `src/canvas/` — everything it needs from the
-canvas, reading (`readEpisodeContext`, `readBoardSummary`) or **writing** (`applyGrouping`,
+canvas, reading (`readEpisodeContext`, `readBoardSummary`, `readEpisodeValidity` via `verify`),
+planning (`planGrouping`, `planIdeas`) or **writing** (`applyGrouping`,
 `createAgentNotes`, `createAgentRelations`), is **injected** by `Canvas.tsx` as a function, not
 imported. That is what keeps the whole loop — write-back included — testable without an editor: the
 companion calls adapter code through a seam, it never becomes canvas state the companion holds.
@@ -111,8 +112,10 @@ flowchart LR
 ```
 
 The companion is the second consumer of that stream and the only one that acts on it. It reads
-the document too, but only through `readEpisodeContext` — to turn the episode's ids into note
-text — never to reconstruct canvas state the events already carry.
+the document too, but only through injected readers — `readEpisodeContext` turns the episode's
+ids into note text, `readBoardSummary` hands every agent the whole board, and `readEpisodeValidity`
+(`verify`) re-reads the live board when a queued remark reaches the front — never to reconstruct
+canvas state the events already carry.
 
 **Write / import** — rebuilding the canvas from canonical JSON in a single undo step. The two
 derived layers are output-only: whatever `spatialContext` / `grounding` an imported document
@@ -182,22 +185,22 @@ document the single source of truth and the stream a view of its changes.
 `adapter.ts`, `ids.ts`, `richText.ts` use **type-only** tldraw imports so round-trip tests run
 without a DOM.
 
-| File                  | Responsibility                                                                                                                                | Key exports                                                                                                                                                                                                                                   |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `adapter.ts`          | The projection: `shapeToNode` / `nodeToShape`, plus defensive `shape.meta` read/write helpers                                                 | `shapeToNode`, `nodeToShape`, `readNodeMeta`, `writeNodeMeta`, `readNodeContextualField`, `writeNodeContextualField`, `contextualFieldPatch`, `PageTransform`                                                                                 |
-| `canvasView.ts`       | Assembles the whole `CanvasDocument` from the current page — the one place a document is built                                                | `getCanvasDocument`, `useCanvasDocument`                                                                                                                                                                                                      |
-| `relations.ts`        | Relation ⇄ arrow projection; reads bound arrows into `Relation`s, rebuilds them on import, owns gravity, draws a reflection's accepted arrows | `getCanvasRelations`, `createRelations`, `createAgentRelations`, `isRelationArrow`, `relationType`, `relationGravity`, `setRelationGravity`, `selectedRelationArrowIds`, `RELATION_META_KEY`, `RELATION_GRAVITY_META_KEY`, `ARROW_SHAPE_TYPE` |
-| `relationGeometry.ts` | Measures each relation arrow's drawn path — world-space bounds + a point **on** the curve. Never throws                                       | `getRelationGeometry`                                                                                                                                                                                                                         |
-| `contextualField.ts`  | Editor-side writes for the contextual field (set/clear radius, with history mark)                                                             | `setContextualFieldRadius`, `selectedPostItIds`                                                                                                                                                                                               |
-| `metadata.ts`         | Non-derivable node state via tldraw side-effects — `createdAt` / `updatedAt` / `createdBy`, `meta.relation`                                   | `registerNodeMetadata`, `restoringNodes`                                                                                                                                                                                                      |
-| `spatialEvents.ts`    | Drives the pure `diffCanvas` from live edits — holds the previous document, diffs on store change, emits                                      | `registerSpatialEvents`                                                                                                                                                                                                                       |
-| `episodeContext.ts`   | What an episode's ids refer to — resolves `NodeId`s to note text and collects the relations standing on them                                  | `readEpisodeContext`                                                                                                                                                                                                                          |
-| `episodeValidity.ts`  | Whether the board still bears an episode out — the reading half of the staleness check, in the rounded-centre frame a move was recorded in    | `readEpisodeValidity`                                                                                                                                                                                                                         |
-| `boardContext.ts`     | The whole board, read for the companion — the one line feeding `buildBoardSummary` the live canvas, for the suggester and the reflection      | `readBoardSummary`                                                                                                                                                                                                                            |
-| `ideas.ts`            | Reflected ideas, turned into ghosts and then into notes — the client places, the model never does                                             | `planIdeaNotes`, `createAgentNotes`                                                                                                                                                                                                           |
-| `grouping.ts`         | A grouping, turned into moves — resolves the model's chosen ids against the live canvas, commits the planned targets as one undo step         | `planGrouping`, `applyGrouping`, `GroupingPlan`                                                                                                                                                                                               |
-| `ids.ts`              | Identity mapping: `NodeId` ⇄ `TLShapeId` (and the relation equivalents), tldraw-runtime-free                                                  | `nodeIdToShapeId`, `shapeIdToNodeId`, `relationIdToShapeId`, `shapeIdToRelationId`, `createNodeId`                                                                                                                                            |
-| `richText.ts`         | Pure plain-text ⇄ rich-text conversion (formatting is intentionally lossy on rebuild)                                                         | `plainTextToRichText`, `richTextToPlainText`                                                                                                                                                                                                  |
+| File                  | Responsibility                                                                                                                                                    | Key exports                                                                                                                                                                                                                                   |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `adapter.ts`          | The projection: `shapeToNode` / `nodeToShape`, plus defensive `shape.meta` read/write helpers                                                                     | `shapeToNode`, `nodeToShape`, `readNodeMeta`, `writeNodeMeta`, `readNodeContextualField`, `writeNodeContextualField`, `contextualFieldPatch`, `PageTransform`                                                                                 |
+| `canvasView.ts`       | Assembles the whole `CanvasDocument` from the current page — the one place a document is built                                                                    | `getCanvasDocument`, `useCanvasDocument`                                                                                                                                                                                                      |
+| `relations.ts`        | Relation ⇄ arrow projection; reads bound arrows into `Relation`s, rebuilds them on import, owns gravity, draws a reflection's accepted arrows                     | `getCanvasRelations`, `createRelations`, `createAgentRelations`, `isRelationArrow`, `relationType`, `relationGravity`, `setRelationGravity`, `selectedRelationArrowIds`, `RELATION_META_KEY`, `RELATION_GRAVITY_META_KEY`, `ARROW_SHAPE_TYPE` |
+| `relationGeometry.ts` | Measures each relation arrow's drawn path — world-space bounds + a point **on** the curve. Never throws                                                           | `getRelationGeometry`                                                                                                                                                                                                                         |
+| `contextualField.ts`  | Editor-side writes for the contextual field (set/clear radius, with history mark)                                                                                 | `setContextualFieldRadius`, `selectedPostItIds`                                                                                                                                                                                               |
+| `metadata.ts`         | Non-derivable node state via tldraw side-effects — `createdAt` / `updatedAt` / `createdBy`, `meta.relation`                                                       | `registerNodeMetadata`, `restoringNodes`                                                                                                                                                                                                      |
+| `spatialEvents.ts`    | Drives the pure `diffCanvas` from live edits — holds the previous document, diffs on store change, emits                                                          | `registerSpatialEvents`                                                                                                                                                                                                                       |
+| `episodeContext.ts`   | What an episode's ids refer to — resolves `NodeId`s to note text and collects the relations standing on them                                                      | `readEpisodeContext`                                                                                                                                                                                                                          |
+| `episodeValidity.ts`  | Whether the board still bears an episode out — the reading half of the staleness check, in the rounded-centre frame a move was recorded in                        | `readEpisodeValidity`                                                                                                                                                                                                                         |
+| `boardContext.ts`     | The whole board, read for the companion — the one line feeding `buildBoardSummary` the live canvas, for all four agents (observer, suggester, reflection, digest) | `readBoardSummary`                                                                                                                                                                                                                            |
+| `ideas.ts`            | Reflected ideas, turned into ghosts and then into notes — the client places, the model never does                                                                 | `planIdeaNotes`, `createAgentNotes`                                                                                                                                                                                                           |
+| `grouping.ts`         | A grouping, turned into moves — resolves the model's chosen ids against the live canvas, commits the planned targets as one undo step                             | `planGrouping`, `applyGrouping`, `GroupingPlan`                                                                                                                                                                                               |
+| `ids.ts`              | Identity mapping: `NodeId` ⇄ `TLShapeId` (and the relation equivalents), tldraw-runtime-free                                                                      | `nodeIdToShapeId`, `shapeIdToNodeId`, `relationIdToShapeId`, `shapeIdToRelationId`, `createNodeId`                                                                                                                                            |
+| `richText.ts`         | Pure plain-text ⇄ rich-text conversion (formatting is intentionally lossy on rebuild)                                                                             | `plainTextToRichText`, `richTextToPlainText`                                                                                                                                                                                                  |
 
 ### `src/canvas/shapes/` — the tldraw projection of a post-it
 
@@ -230,7 +233,7 @@ Every decision that could put a box in the wrong place lives in a pure function;
 | `main.tsx`                   | React entry point — mounts `<App/>` into `#root`                                                                                                                          | —                                                              |
 | `App.tsx`                    | Thin shell that renders `<Canvas/>`                                                                                                                                       | `App`                                                          |
 | `canvas/Canvas.tsx`          | The `<Tldraw>` wrapper — `persistenceKey`, `onMount` (registers metadata + the event stream, returns a disposer, dev `window.editor` / `spatialEvents` / `seedDemoScene`) | `Canvas`                                                       |
-| `canvas/config.tsx`          | Module-scope registration of shape utils, tools, UI overrides, and custom components — including the four-tool toolbar                                                    | `customShapeUtils`, `customTools`, `uiOverrides`, `components` |
+| `canvas/config.tsx`          | Module-scope registration of shape utils, tools, UI overrides, and custom components — including the four-tool toolbar and the ✦ actions after its divider                | `customShapeUtils`, `customTools`, `uiOverrides`, `components` |
 | `canvas/dev/seedScenario.ts` | Dev-only helper that lays out the MVP 1 §8 demonstration scene (three post-its, one field)                                                                                | `seedDemoScene`                                                |
 | `index.css`                  | Global styles + `tldraw.css` import                                                                                                                                       | —                                                              |
 
@@ -364,7 +367,9 @@ Three layers, because the pure layer alone shipped two bugs it couldn't see. See
   `gravity` is the one deliberate exception, and it isn't content: drawing an arrow is itself the
   full-strength claim, so absent means `1` — see `clampGravity`.
 - **Proximity never becomes a relation.** `spatialContext` is what the layout implies;
-  `relations` is only what the user drew and named.
+  `relations` is only what the user drew and named — with one caveat: an _accepted_ agent arrow
+  also lands in `relations`, and nothing in the record says it was the agent's. `createdBy: 'agent'`
+  lives only in the arrow's shape meta, so a reader of the JSON cannot tell the two apart.
 - **A relation never becomes influence.** Its `gravity` is read from the arrow's meta alone, so
   distance can't move it and it can't move an `influences` row.
 - **The two strength signals are never _conflated_** — which is weaker than never combined, and
@@ -380,13 +385,14 @@ Three layers, because the pure layer alone shipped two bugs it couldn't see. See
   change detection, so every consumer sees the same ordered events. Its disposer is returned from
   `onMount` — dropping it would double every event under StrictMode.
 - **Silence is an answer, not a failure.** The observer returns `{ speak, comment }` as structured
-  output, and every failure path on the server — no key, bad body, rejected request — returns
-  `speak: false` rather than throwing. Nothing in the loop distinguishes "had nothing to say" from
+  output, and every failure path on the observe route — no key, bad body, rejected request — returns
+  `speak: false` rather than throwing (the other routes return their own decline). Nothing in the loop distinguishes "had nothing to say" from
   "could not ask", by design: neither should interrupt the person thinking.
 - **The companion holds no canvas state.** It reads the document only through `readEpisodeContext`
-  (an episode's ids → note text) and `readBoardSummary` (the whole board, for the suggester and the
-  reflection), and writes to it only through `applyGrouping` / `createAgentNotes` /
-  `createAgentRelations` — all four are functions injected by `Canvas.tsx`, never imports. Everything
+  (an episode's ids → note text), `readBoardSummary` (the whole board, for all four agents) and
+  `readEpisodeValidity` (`verify`, the live board in an episode's terms), plans through
+  `planGrouping` / `planIdeas`, and writes to it only through `applyGrouping` / `createAgentNotes` /
+  `createAgentRelations` — all of them functions injected by `Canvas.tsx`, never imports. Everything
   else it knows comes from the events. That is what makes `createCompanion` testable with a fake
   stream, fake clients and no editor at all, write-back included.
 - **One thing speaks at a time, and it is the pump.** Observation, the proactive grouping, an
@@ -394,7 +400,9 @@ Three layers, because the pure layer alone shipped two bugs it couldn't see. See
   `voice`. That is what makes "in gesture order, one at a time" a property of the structure
   rather than a rule four call sites have to keep remembering.
 - **No API key reaches the browser.** The prompt, the model choice and both SDK calls live in
-  `server/`; the client ships an episode and receives a verdict.
+  `server/`; the client ships an episode (`/api/observe`), the whole board plus an intent or lens
+  (`/api/suggest`, `/api/reflect`), the board for a standing understanding (`/api/digest`) or text
+  to voice (`/api/speak`), and receives a decision, proposal, reading or audio back.
 - **One Canvas is one tldraw page.** The page menu is hidden to keep that true.
 
 ## See also
