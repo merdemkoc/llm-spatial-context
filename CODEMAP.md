@@ -1,9 +1,10 @@
 # Codemap
 
-A file-by-file map of `llm-spatial-context`, for anyone — human or model — who needs to
-find where something lives before changing it. This is the **where**. The
-[`README.md`](./README.md) is the overview, [`docs/why.md`](./docs/why.md) is the argument
-behind the prototype, and [Key invariants](#key-invariants) below lists the rules the code keeps.
+A file-by-file map of `llm-spatial-context`, for anyone, human or model, who needs to find
+where something lives before changing it. The [`README.md`](./README.md) gives the idea and the
+assumptions behind it, and [`docs/why.md`](./docs/why.md) the full argument. This file documents
+what was built: where each piece lives, the [invariants](#key-invariants) the code keeps,
+[where to add things](#where-to-add-things) and the [known limitations](#known-limitations).
 
 ## How to read this
 
@@ -134,8 +135,8 @@ flowchart LR
 ## The four layers of context
 
 A `CanvasDocument` keeps four kinds of claim apart so a reader can tell them apart instead of
-receiving them pre-mixed. See the README's
-[Four layers of context](./README.md#four-layers-of-context) for the reasoning.
+receiving them pre-mixed. The reasoning is in
+[`docs/why.md`](./docs/why.md#three-kinds-of-evidence-kept-apart).
 
 | Layer                       | JSON location                                | Owning code                                          |
 | --------------------------- | -------------------------------------------- | ---------------------------------------------------- |
@@ -271,7 +272,7 @@ Every decision that could put a box in the wrong place lives in a pure function;
 
 ### `src/companion/` — the AI observer's loop
 
-Subscribes to the [event stream](./README.md#event-stream), groups events into episodes, and — when a pause reveals a meaningful change — asks the model whether to say something. The model call and the speech synthesis live in `server/` (Hono routes) so the API key never reaches the browser.
+Subscribes to the event stream (see [Data flow](#data-flow)), groups events into episodes, and — when a pause reveals a meaningful change — asks the model whether to say something. The model call and the speech synthesis live in `server/` (Hono routes) so the API key never reaches the browser.
 
 | File                | Responsibility                                                                                                                                                                                                                                                                                                                                                              | Key exports                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -337,8 +338,10 @@ Four agents that once each carried their own copy of the asking now share it:
 
 ### Tests (colocated `*.test.ts(x)`)
 
-Three layers, because the pure layer alone shipped two bugs it couldn't see. See the README's
-[Testing](./README.md#testing) section.
+Three layers, because the pure layer alone shipped two bugs it couldn't see. The default
+environment is `node`; DOM suites opt in with a `@vitest-environment jsdom` docblock. The
+companion runs against fake clients and a fake clock, so no test touches the network.
+`npm run eval` is the only thing that calls the real models, and it is never part of `npm test`.
 
 | Layer              | Files                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Env     |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
@@ -405,9 +408,46 @@ Three layers, because the pure layer alone shipped two bugs it couldn't see. See
   to voice (`/api/speak`), and receives a decision, proposal, reading or audio back.
 - **One Canvas is one tldraw page.** The page menu is hidden to keep that true.
 
+## Where to add things
+
+- A node type: `NodeType` in `src/domain/node.ts`, a shape util and tool in `src/canvas/shapes/`,
+  then the adapter.
+- A custom shape: copy `src/canvas/shapes/PostItShapeUtil.tsx` and register it in
+  `customShapeUtils` in `src/canvas/config.tsx`.
+- A custom tool: copy `src/canvas/shapes/PostItTool.ts`, then register it in `customTools`,
+  `uiOverrides` and the `Toolbar` override, all in `src/canvas/config.tsx`.
+- Code that needs the editor: the `onMount(editor)` callback in `src/canvas/Canvas.tsx`.
+- Another way to combine the strength signals: a `CombineStrategy` in `STRATEGIES` in
+  `src/domain/effectiveStrength.ts`. The strategy name travels with every row.
+- A new event: the change kind in `src/domain/canvasDiff.ts` first, then the `SpatialEvent` union
+  and `deriveEvents` in `src/domain/events.ts`, then a line in `describeEvent` in
+  `src/canvas/ui/EventLogPanel.tsx`.
+- Something that watches the canvas: `spatialEventStream.subscribe(fn)` from `@/domain`, never a
+  second store subscription.
+- What the companion says: `SYSTEM_PROMPT` and `renderEpisode` in `server/prompt.ts`. Models and
+  voice are set in `.env` (see `.env.example`).
+- More of the board reaching the observer, such as text edits: add it upstream as a change kind
+  and an event, then carry it through `buildEpisodeSummary`. Don't special-case it in the
+  companion.
+
+## Known limitations
+
+The open questions about the idea itself (attention, image nodes, text edits, initiative) are in
+the [README](./README.md#whats-still-open). These are the technical ones.
+
+- An accepted agent arrow is indistinguishable from the user's own in `relations`. Its
+  `createdBy: 'agent'` lives only in the arrow's shape `meta`.
+- Without API keys the companion is silent, which looks the same as having nothing to say.
+- `INTENT_WEIGHT` (0.75), the proximity bands (0.66 and 0.33) and `TRIVIAL_INFLUENCE_EPSILON`
+  (0.05) are guesses. Nothing measures them against a task yet.
+- Rebuilding a canvas from JSON keeps text and relations but loses text formatting and arrow bends.
+- Deleting a note leaves its arrow on the canvas unbound, and the relation drops out of
+  `relations`.
+- The event log and the companion's transcript live in memory only. A reload clears them.
+- `shape.meta` patches merge key by key, and an `undefined` anywhere fails validation. Use `null`
+  to clear a field.
+
 ## See also
 
-- [`README.md`](./README.md) is the overview: how to run it, the extension recipes
-  ([Where to add things](./README.md#where-to-add-things)) and the known trade-offs
-  ([Known limitations](./README.md#known-limitations)).
+- [`README.md`](./README.md) is the idea, the assumptions behind it, and how to run it.
 - [`docs/why.md`](./docs/why.md) is the research note behind the prototype.
