@@ -356,7 +356,7 @@ flowchart LR
     doc --> diff["diffCanvas"]
     diff --> events["deriveEvents"]
     events --> stream[["event stream"]]
-    stream --> episode["episode<br/><i>after a 2s pause</i>"]
+    stream --> episode["episode<br/><i>after a pause (1.2s, adaptive)</i>"]
     episode --> gate{"meaningful?"}
     gate -.->|"no"| quiet["silence"]
     gate --> model{{"observer<br/>reads the meaning"}}
@@ -393,12 +393,12 @@ Both of those are what the model actually said to the canvas underneath them. Th
 newest first, so the one on top came second — an arrow drawn to a note on the far side of the
 canvas, which is exactly the case the separation of signals exists for: proximity says those two
 are unrelated, and the user has just said otherwise. The one below it came first, from three notes
-drifting into one another's fields.
+drifting into one another's fields. The top one reads "Onboarding time now points explicitly to pricing not being the objection — the friction story is sharpening into a cause."; the one below it, "Churn, onboarding, and the ticket spike are converging — early friction may be the common thread."
 
-The pause before it speaks is real and it is measured: about two seconds for the episode to close,
-about three for the model to decide, about two more to synthesise the voice. Roughly six and a half
-seconds from "user stops dragging" to the first sound. A hint covers the last four of those, naming
-the job it is on rather than spinning.
+The pause before it speaks is real and it is measured: 1.2 seconds for the episode to close (it
+adapts upward, to at most four), a median of 3.1 for the model to decide, and 1.6 more to first
+sound from the voice. Roughly six seconds from "user stops dragging" to the first sound. A hint
+covers the last 4.7 of those, naming the job it is on rather than spinning.
 
 This feels quite different from a chatbot. I'm not handing the model a prompt — I'm building a
 representation, and it is watching that representation change.
@@ -442,7 +442,8 @@ The five things below were written as what "an observer in that position" could 
 of this existed. One of them is now a persona by name — `gap-finder` reflects on exactly "an
 unexplored gap between two conceptual clusters." The rest still describe an observer that notices
 and proposes on its own, mid-gesture, with no button pressed — which is still the gap: reflection
-runs only on request, or under a cooldown after a silence the board's shape earns.
+runs only on request, and grouping only on request or under a cooldown after a silence the board's
+shape earns.
 
 - two semantically related ideas that have become spatially separated,
 - a cluster forming around a concept,
@@ -456,13 +457,13 @@ runs only on request, or under a cooldown after a silence the board's shape earn
 
 Being specific about this is most of the value of a note like this one.
 
-| Missing                    | What it would take                                                                                                                                                                 |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Image nodes**            | A second `NodeType` with its own shape util and tool. The Node abstraction was built for it; nothing uses it yet                                                                   |
-| **Attention**              | Selection and focus entering `CanvasDocument` and the episode, rather than only driving the overlay                                                                                |
-| **Semantic change events** | A `content_changed` event — the first non-spatial one, which is why it hasn't been added lightly                                                                                   |
-| **Unprompted write-back**  | The observer proposing an edit off its own back. Reflection and grouping only run on request, or after a cooldown-gated silence — never as a third option beside speak/stay-silent |
-| **A relation vocabulary**  | `explains`, `supports`, `contradicts` as known types, rather than whatever word the user typed                                                                                     |
+| Missing                    | What it would take                                                                                                                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Image nodes**            | A second `NodeType` with its own shape util and tool. The Node abstraction was built for it; nothing uses it yet                                                                            |
+| **Attention**              | Selection and focus entering `CanvasDocument` and the episode, rather than only driving the overlay                                                                                         |
+| **Semantic change events** | A `content_changed` event — the first non-spatial one, which is why it hasn't been added lightly                                                                                            |
+| **Unprompted write-back**  | The observer proposing an edit off its own back. Reflection runs only on request; grouping on request, or after a cooldown-gated silence — never as a third option beside speak/stay-silent |
+| **A relation vocabulary**  | `explains`, `supports`, `contradicts` as known types, rather than whatever word the user typed                                                                                              |
 
 Nothing about the current prototype answers the hypothesis. It is a system that works well enough to
 let me think about it.
